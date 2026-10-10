@@ -22,6 +22,7 @@ from blender_ai_tools.measure.visibility import (
     project,
     rasterize,
     render_views,
+    orbit_views,
     standard_views,
     summarize_visible_points,
     visible_fraction,
@@ -1116,6 +1117,62 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(both.value, 1.0)
         self.assertIn("枠の外", both.reason)
 
+
+
+class OrbitViewsTest(unittest.TestCase):
+    """アプリでは視点を動かせて、360 度どの向きからも見られる。まわり全体から見るカメラで調べる"""
+
+    def test_layout(self):
+        center = np.array([0.0, 0.0, 0.7])
+        views = orbit_views(center, 3.0)
+        step = thresholds.APP_ORBIT_AZIMUTH_STEP_DEG
+        expected = round(360.0 / step) * len(thresholds.APP_ORBIT_ELEVATIONS_DEG) + 2
+        self.assertEqual(len(views), expected)
+        standard = standard_views(center, 3.0)
+        for orbit_name, standard_name in (("az000_el+00", "front"), ("az090_el+00", "left"),
+                                          ("az180_el+00", "back"), ("az270_el+00", "right")):
+            with self.subTest(view=orbit_name):
+                np.testing.assert_allclose(views[orbit_name].position, standard[standard_name].position, atol=1e-12)
+        np.testing.assert_allclose(views["top"].position, center + [0, 0, 3.0], atol=1e-12)
+        np.testing.assert_allclose(views["bottom"].position, center - [0, 0, 3.0], atol=1e-12)
+        self.assertGreater(views["az000_el+30"].position[2], center[2])  # 正は上から見下ろす
+        self.assertLess(views["az000_el-30"].position[2], center[2])
+        for name, camera in views.items():
+            with self.subTest(name=name):
+                self.assertAlmostEqual(float(np.linalg.norm(camera.position - center)), 3.0, places=12)
+                # どのカメラも center を見ている
+                looking = camera.forward
+                to_center = (center - camera.position) / 3.0
+                np.testing.assert_allclose(looking, to_center, atol=1e-12)
+                # 縦長の画像
+                self.assertEqual(camera.height, thresholds.VISIBILITY_RESOLUTION)
+                self.assertEqual(camera.width, round(thresholds.VISIBILITY_RESOLUTION * thresholds.APP_SCREEN_ASPECT))
+                self.assertLess(camera.width, camera.height)
+
+    def test_sees_from_below_what_standard_views_miss(self):
+        """下からしか見えない所（スカートの中のような所）も、まわり全体のカメラなら見える"""
+        vertices, triangles = box((0.4, 0.4, 1.0), center=(0.0, 0.0, 0.5))
+        mesh = (vertices, triangles)
+        # 箱の底の面のまん中。同じ高さのカメラからは、前の面に隠れる（輪郭から 3cm 以上内側。1ピクセルは約 1.6cm）
+        on_bottom = [[0.0, 0.0, 0.0]]
+        standard = render_views(vertices, triangles, standard_views((0, 0, 0.5), 3.0, width=256, height=256))
+        orbit = render_views(vertices, triangles, orbit_views((0, 0, 0.5), 3.0, height=256))
+        self.assertEqual(summarize_visible_points(on_bottom, standard, mesh=mesh).signal, Signal.GREEN)
+        result = summarize_visible_points(on_bottom, orbit, mesh=mesh)
+        self.assertEqual(result.signal, Signal.RED)
+        self.assertGreater(result.details["per_view"]["bottom"], 0)
+        # 体の中の点は、どの向きからも見えない
+        self.assertEqual(summarize_visible_points([[0.0, 0.0, 0.5]], orbit, mesh=mesh).signal, Signal.GREEN)
+
+    def test_invalid_arguments(self):
+        for kwargs in ({"azimuth_step_deg": 0.0}, {"azimuth_step_deg": 400.0}, {"elevations_deg": (90.0,)},
+                       {"elevations_deg": (-90.0,)}, {"aspect": 0.0}, {"aspect": math.nan}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                orbit_views((0, 0, 0), 3.0, **kwargs)
+        with self.assertRaises(ValueError):
+            orbit_views((0, 0, 0), 0.0)
+        views = orbit_views((0, 0, 0), 2.0, azimuth_step_deg=90.0, elevations_deg=(0.0,), include_poles=False)
+        self.assertEqual(sorted(views), ["az000_el+00", "az090_el+00", "az180_el+00", "az270_el+00"])
 
 if __name__ == "__main__":
     unittest.main()

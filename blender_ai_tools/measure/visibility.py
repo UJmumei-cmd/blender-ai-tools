@@ -238,6 +238,61 @@ def standard_views(center, distance: float, *, width: int = thresholds.VISIBILIT
     return views
 
 
+def orbit_views(center, distance: float, *,
+                azimuth_step_deg: float = thresholds.APP_ORBIT_AZIMUTH_STEP_DEG,
+                elevations_deg=thresholds.APP_ORBIT_ELEVATIONS_DEG, include_poles: bool = True,
+                height: int = thresholds.VISIBILITY_RESOLUTION, aspect: float = thresholds.APP_SCREEN_ASPECT,
+                kind: str = "perspective", fov_deg: float = thresholds.APP_CAMERA_FOV_DEG, fov_axis: str = "auto",
+                ortho_scale: float | None = None, near: float = CAMERA_NEAR,
+                far: float = CAMERA_FAR) -> dict[str, Camera]:
+    """まわり全体から center を見るカメラ。アプリでは、ユーザーが視点を動かして 360 度どの向きからも見られるので、
+    「アプリのカメラから見える」は、このカメラのどれかから見えることとして調べる。
+
+    - 水平の向き（azimuth）：0 は前（-Y の側）。キャラの左（+X の側）へ回るほど増える（90 は "left"、180 は "back"）。
+      0 から azimuth_step_deg ごと（360 未満）。
+    - 上下（elevation）：elevations_deg の角度ごと。正は上から見下ろす、負は下から見上げる。
+    - include_poles が True なら、真上（"top"）と真下（"bottom"）も足す。
+    - どれも center から distance 離れた所から center を見る。画像は縦長（横 = 縦 × aspect）。
+    - 名前は "az000_el+00" のように、水平の向きと上下の角度（どちらも度、整数に丸める）。
+    """
+    middle = _as_vector3(center, "center")
+    distance = _real(distance, "distance")
+    if not (math.isfinite(distance) and distance > 0.0):
+        raise ValueError(f"distance は 0 より大きい数にしてください（いまは {distance}）")
+    step = _real(azimuth_step_deg, "azimuth_step_deg")
+    if not (math.isfinite(step) and 0.0 < step <= 360.0):
+        raise ValueError(f"azimuth_step_deg は 0 より大きく 360 以下にしてください（いまは {step}）")
+    ratio = _real(aspect, "aspect")
+    if not (math.isfinite(ratio) and ratio > 0.0):
+        raise ValueError(f"aspect は 0 より大きい数にしてください（いまは {ratio}）")
+    rows = _integer(height, "height")
+    columns = max(1, round(rows * ratio))
+    elevations = [_real(e, "elevations_deg") for e in elevations_deg]
+    for elevation in elevations:
+        if not (math.isfinite(elevation) and -90.0 < elevation < 90.0):
+            raise ValueError(f"elevations_deg は -90 より大きく 90 より小さくしてください（いまは {elevation}）"
+                             "（真上・真下は include_poles で足す）")
+    options = dict(kind=kind, width=columns, height=rows, fov_deg=fov_deg, fov_axis=fov_axis,
+                   ortho_scale=ortho_scale, near=near, far=far)
+    views: dict[str, Camera] = {}
+    count = math.ceil(360.0 / step - 1e-9)
+    for elevation in elevations:
+        tilt = math.radians(elevation)
+        for index in range(count):
+            azimuth = index * step
+            turn = math.radians(azimuth)
+            # 前（-Y）から、キャラの左（+X）へ回る
+            direction = np.array([math.sin(turn) * math.cos(tilt), -math.cos(turn) * math.cos(tilt), math.sin(tilt)])
+            name = f"az{round(azimuth):03d}_el{round(elevation):+03d}"
+            if name in views:
+                raise ValueError(f"カメラの名前が重なりました（{name}）。角度の間隔を確かめてください")
+            views[name] = look_at(middle + distance * direction, middle, up=(0.0, 0.0, 1.0), **options)
+    if include_poles:
+        views["top"] = look_at(middle + [0.0, 0.0, distance], middle, up=(0.0, 1.0, 0.0), **options)
+        views["bottom"] = look_at(middle - [0.0, 0.0, distance], middle, up=(0.0, 1.0, 0.0), **options)
+    return views
+
+
 # MARK: - 写す（点を画像の座標に）
 
 
@@ -619,6 +674,8 @@ def visible_points(points, buffer: DepthBuffer, camera: Camera, *,
     - mesh=(vertices, triangles)（描いたときと同じメッシュ）を渡すとき：そのピクセルに写った三角形の面を、
       点のちょうどの位置まで延ばした奥行き。斜めの面でも、面の上の点は面と同じ奥行きになる。
       見える問題を見落とさないために、なるべく mesh を渡す。
+      輪郭の近く（1ピクセルほど）では、ピクセルの中心に写った三角形の面で比べるため、隠れている点を「見える」と
+      することがある。見落としとは逆の向き（安全な側）なので、そのままにしている。
     """
     _check_camera(camera)
     array = _as_points(points, "points")
