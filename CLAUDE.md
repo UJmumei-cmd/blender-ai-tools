@@ -114,13 +114,16 @@ docs/roadmap.md        ロードマップ（計画）
 blender_ai_tools/      拡張機能の本体（このフォルダを zip にして Blender に入れる）
   blender_manifest.toml
   __init__.py          register()・unregister()。bpy はこの中で読み込む
-  core/                （予定）bpy を使わない計算（numpy だけ）。Blender の外でも試せる
-  catalog/             （予定）A8 道具の目録（道具ごとの JSON スキーマ）
-  bones/               （予定）A3 骨の辞書（MMD 準標準・VRM・Mixamo）
+  thresholds.py        基準の数字（ここだけに置く）
+  catalog/             A8 道具の目録（道具ごとの JSON スキーマ）
+  bones/               A3 骨の辞書（MMD 準標準・VRM・Mixamo）
+  provenance/          A15 道具の版と再現性の記録
+  measure/             A4 測る道具箱（results.py：信号と結果の形）
   ui/                  （予定）パネル・オペレーター・翻訳の表
-  （機能ごとのフォルダ：measure/・export/ など。予定）
+  （機能ごとのフォルダ：export/ など。予定）
 tests/
-  run_in_blender.py    Blender の中で tests/ の下を全部動かす
+  run_in_blender.py    Blender の中でテストを動かす（全部、または選んだもの）
+  shapes.py            テスト用の形（箱・球・格子）
   unit/                bpy なしのテスト
   blender/             Blender の中で動かすテスト
   fixtures/            （予定）見本を作るスクリプト
@@ -134,12 +137,26 @@ tools/                 （予定）開発用のスクリプト
   - パッケージの中は相対の import にし、`sys.path` を書き換えない。
   - 外のパッケージは wheel にして同梱する（numpy は Blender に入っている物を使う）。
   - ファイルや通信を使うときは、manifest の `permissions` に理由を書く。
-- **bpy を使う所と使わない所を分けます。** 測る計算は numpy の配列を受け取って数字を返す形にし、bpy から配列を取り出す所は薄くします。`blender_ai_tools/__init__.py` と `core/` では、ファイルの先頭で bpy を import しません（`tests/unit/test_package.py` が確かめます）。
+- **bpy を使う所と使わない所を分けます。** 測る計算は numpy の配列を受け取って数字を返す形にし、bpy から配列を取り出す所は薄くします。
+  - bpy・bmesh・mathutils など Blender だけのモジュールを import してよいのは、`ui/` の下と、名前が `_bpy.py` で終わるファイルだけです。
+  - ほかのファイルは、ファイルの先頭（関数の外）で `ui` や `*_bpy` を読み込みません。bpy なしで読み込めるようにするためです。
+  - `exec`・`eval`・`compile`・`__import__` は使いません。
+  - これらは `tests/unit/test_code_rules.py` が確かめます。
+- 外のパッケージに頼りません。計算は Python の標準と numpy だけで書きます（scipy などは Blender に入っていません）。numpy は、Blender に入っている版（5.2.2 では 2.3）で動く書き方にします。
 - 重い作業（全フレームの確かめ・焼き込み・書き出し）は、A10 で別の Blender（`--background`）に任せます。画面を固めません。途中で止めても、元のファイルが壊れないようにします。
 - コードの名前は英語、コメント・説明・画面の文は日本語（やさしい言葉）にします。convert_blend.py の書き方（日本語の docstring、型の注釈、`# MARK: -` の区切り）に合わせます。
 - 画面の文は翻訳の表を通します（日本語が元で、英語に切り替える）。
 - 報告の文は、決まった形に数字を入れて作ります。文の形は1か所にまとめます。
-- 基準の数字（0.5mm、1点4本 など）は、名前を付けて1か所にまとめます。コードの中に数字をばらまきません。
+- 基準の数字（0.5mm、1点4本 など）は、名前を付けて `blender_ai_tools/thresholds.py` にまとめます。コードの中に数字をばらまきません。まだ決まっていない数字には「仮」と書きます。
+- 測った結果は `measure/results.py` の `Measurement`（値・単位・信号・理由）で返します。値が無いときは灰にし、理由を書きます。信号をまとめるときは、赤 > 灰 > 黄 > 緑 の順に重く扱います。
+- 測る計算の決まり（A4）：
+  - 長さはメートル、角度は度（引数と戻り値の名前に `_deg` を付ける）、時間は秒。
+  - 向きは Blender のまま：Z が上、モデルは -Y を向く、キャラの左は +X。
+  - 点の並びは `(N, 3)` の float64、三角形は `(M, 3)` の int64（四角形などは、Blender から取り出すときに三角形に分ける）。面は外から見て反時計回り。
+  - 動きは `(フレーム数, 関節の数, 3)` の並び。関節の名前は MMD 準標準の名前。
+  - ウェイトは、頂点ごとに `(N, K)` の骨の番号（空きは -1）と `(N, K)` の重み（空きは 0）の2つの並びで持つ。
+  - 大きな並びどうしを全部比べる計算は、メモリが増えすぎないように、小分けにして行う。
+  - 入力の形が違うときは、日本語の説明を付けて `ValueError` を出す。
 - 再現性（A15）：
   - 乱数は種を決めて、記録します。
   - 結果には、道具の版・Blender の版・mmd_tools の版・convert_blend.py のコミット・入力ファイルのハッシュ・設定を付けます。
@@ -153,6 +170,7 @@ tools/                 （予定）開発用のスクリプト
 - テストは標準の `unittest` で書きます（Blender の中の Python にも、そのまま使えるため）。
 - 全部のテスト（Blender の中）。コミットの前に必ず通します：
   `blender --background --factory-startup --python-exit-code 1 --python tests/run_in_blender.py`
+- 選んだテストだけ（Blender の中）：`... --python tests/run_in_blender.py -- tests.unit.test_bones tests/blender/test_extension.py`
 - bpy なしのテストだけ（速い）：`python3 -m unittest discover -s tests/unit -t .`
 - 拡張機能の zip を作る：`blender --command extension build --source-dir blender_ai_tools --output-dir dist`
 - Mac mini では、`blender` を `/Applications/Blender.app/Contents/MacOS/Blender` に読み替えます。
