@@ -10,13 +10,13 @@
     "VRM 0.x：vrm-c/vrm-specification（コミット 94e82dd3）specification/0.0/schema/vrm.humanoid.bone.schema.json の bone の enum。",
     "VRM 1.0：同じリポジトリの specification/VRMC_vrm-1.0/schema/VRMC_vrm.humanoid.humanBones.schema.json の properties と humanoid.md。",
     "VRoid：saturday06/VRM-Addon-for-Blender（コミット 10bf3e7e）src/io_scene_vrm/common/human_bone_mapper/vroid_mapping.py の表（J_Bip_L_Thumb1 は 1.0 の Metacarpal＝親指０）と、J_(Adj|Bip|Opt|Sec) の前置き。",
-    "VRM → 準標準の対応（hips＝下半身、spine＝上半身、chest＝上半身2、hand＝手首、toes＝つま先 など）は、A3 の作業の指示で決めたものです。"
+    "VRM → 準標準の対応（hips＝センター、spine＝上半身、chest＝上半身2、hand＝手首、toes＝つま先 など）は、A3 の作業の指示で決めたものです。hips は、紅魔館の convert_pmx.py の HUMAN_BONES（hips ← センター・グルーブ・下半身）に合わせてセンターにしました。VRM の hips は上半身と脚の両方の親で、体全体を動かす骨なので、脚の側だけを動かす下半身ではなく、センターに当たります。"
   ],
   "tables": {
     "vrm": {
       "description": "VRM 0.x と 1.0 で同じ意味の、ヒューマノイドの骨の名前",
       "aliases": {
-        "hips": "下半身",
+        "hips": "センター",
         "spine": "上半身",
         "chest": "上半身2",
         "neck": "首",
@@ -91,7 +91,7 @@
     "vroid": {
       "description": "VRoid Studio の骨の名前",
       "aliases": {
-        "J_Bip_C_Hips": "下半身",
+        "J_Bip_C_Hips": "センター",
         "J_Bip_C_Spine": "上半身",
         "J_Bip_C_Chest": "上半身2",
         "J_Bip_C_Neck": "首",

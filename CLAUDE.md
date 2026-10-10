@@ -121,6 +121,7 @@ blender_ai_tools/      拡張機能の本体（このフォルダを zip にし�
   blender_manifest.toml
   __init__.py          register()・unregister()。bpy はこの中で読み込む
   thresholds.py        基準の数字（ここだけに置く）
+  registry.py          目録に載せる道具の一覧（道具はここに1つずつ書く）
   catalog/             A8 道具の目録（道具ごとの JSON スキーマ）
   bones/               A3 骨の辞書（MMD 準標準・VRM・Mixamo）
   provenance/          A15 道具の版と再現性の記録

@@ -9,14 +9,14 @@
   "_sources": [
     "名前：saturday06/VRM-Addon-for-Blender（コミット 10bf3e7e）src/io_scene_vrm/common/human_bone_mapper/mixamo_mapping.py の表（LeftHandThumb1 は VRM 1.0 の Metacarpal＝親指０）。",
     "known_extras の名前（Spine2 以外）は、Mixamo でよく見る名前です。出所の表では確かめていません。",
-    "Mixamo → 準標準の対応は、A3 の作業の指示で決めたものです。"
+    "Mixamo → 準標準の対応は、A3 の作業の指示で決めたものです。Hips は VRM の hips と同じ理由でセンターにしました（aliases_vrm.json の _sources）。"
   ],
   "tables": {
     "mixamo": {
       "description": "Mixamo の骨の名前（名前空間を外した形）",
       "namespaces": ["mixamorig"],
       "aliases": {
-        "Hips": "下半身",
+        "Hips": "センター",
         "Spine": "上半身",
         "Spine1": "上半身2",
         "Neck": "首",

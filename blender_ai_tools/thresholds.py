@@ -17,6 +17,9 @@ def mm(value: float) -> float:
 MAX_TOOL_CALL_LENGTH = 65536
 # 道具の入力のスキーマの入れ子の深さの上限（いちばん外が 0 段）。深すぎるスキーマで止まらなくならないようにする（仮）
 MAX_SCHEMA_DEPTH = 32
+# 骨の名前の対応（bones.map_names）で1回に受け取る名前の数と、1つの名前の長さ（文字）の上限（仮。揺れ物の骨が多いモデルでも足りるように多めにする）
+MAX_BONE_NAMES = 10000
+MAX_BONE_NAME_LENGTH = 256
 
 # MARK: - 書き出し（E1・E2）
 

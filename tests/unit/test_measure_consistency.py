@@ -230,9 +230,13 @@ class JapaneseErrorTest(unittest.TestCase):
 
 # MARK: - 結果の名前・単位・灰
 
+# 点より下にある箱（点を隠さない）。renders_for はこれを写す。summarize_visible_points の mesh にも渡す
+RENDER_MESH = shapes.box(size=(1.0, 1.0, 1.0), center=(0.0, 0.0, -1.0))
+
+
 def renders_for(points: np.ndarray) -> dict:
     """点のまわりを写す、小さな画像のカメラ（前から1つ）"""
-    v, t = shapes.box(size=(1.0, 1.0, 1.0), center=(0.0, 0.0, -1.0))  # 点より下にある箱（点を隠さない）
+    v, t = RENDER_MESH
     camera = visibility.look_at((0.0, -3.0, 0.0), (0.0, 0.0, 0.0), width=32, height=32)
     return visibility.render_views(v, t, {"front": camera})
 
@@ -259,7 +263,7 @@ def all_summaries(empty: bool) -> list[tuple[str, Measurement]]:
             ("slide", kinematics.summarize_slide([])),
             ("unreachable", kinematics.summarize_unreachable(np.zeros(0, dtype=bool))),
             ("jumps", kinematics.summarize_jumps(np.zeros((0, 3), dtype=bool))),
-            ("visible", visibility.summarize_visible_points(np.zeros((0, 3)), {})),
+            ("visible", visibility.summarize_visible_points(np.zeros((0, 3)), {}, mesh=RENDER_MESH)),
         ]
     table = weights.WeightTable.from_dense(np.tile([[0.5, 0.5]], (len(v), 1)))
     point = np.array([[0.0, 0.0, 0.0]])
@@ -279,7 +283,7 @@ def all_summaries(empty: bool) -> list[tuple[str, Measurement]]:
         ("slide", kinematics.summarize_slide([(0, 3, 0.0)])),
         ("unreachable", kinematics.summarize_unreachable(np.array([False, False]))),
         ("jumps", kinematics.summarize_jumps(np.zeros((2, 3), dtype=bool))),
-        ("visible", visibility.summarize_visible_points(point, renders_for(point))),
+        ("visible", visibility.summarize_visible_points(point, renders_for(point), mesh=RENDER_MESH)),
     ]
 
 
@@ -345,11 +349,11 @@ class MeasurementConventionsTest(unittest.TestCase):
     def test_visibility_name_must_be_snake_case(self):
         point = np.array([[0.0, 0.0, 0.0]])
         renders = renders_for(point)
-        result = visibility.summarize_visible_points(point, renders, name="visible_penetration")
+        result = visibility.summarize_visible_points(point, renders, mesh=RENDER_MESH, name="visible_penetration")
         self.assertEqual(result.name, "visible_penetration")
         for bad in ("Visible", "visible points", "見える", "", "_x", 3, None):
             with self.subTest(name=bad), self.assertRaises(ValueError):
-                visibility.summarize_visible_points(point, renders, name=bad)
+                visibility.summarize_visible_points(point, renders, mesh=RENDER_MESH, name=bad)
 
 
 # MARK: - 測れなかった値の扱い（赤でないかぎり灰）
@@ -422,11 +426,11 @@ class PartialUnmeasuredTest(unittest.TestCase):
         inside = np.array([[0.0, 0.0, 0.0]])
         outside = np.array([[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]])  # 2つ目は画像の枠の外
         renders = renders_for(inside)
-        self.assertEqual(visibility.summarize_visible_points(inside, renders, signal_if_visible=Signal.YELLOW).signal,
+        self.assertEqual(visibility.summarize_visible_points(inside, renders, mesh=RENDER_MESH, signal_if_visible=Signal.YELLOW).signal,
                          Signal.YELLOW)
-        self.assertEqual(visibility.summarize_visible_points(outside, renders, signal_if_visible=Signal.YELLOW).signal,
+        self.assertEqual(visibility.summarize_visible_points(outside, renders, mesh=RENDER_MESH, signal_if_visible=Signal.YELLOW).signal,
                          Signal.GRAY)
-        self.assertEqual(visibility.summarize_visible_points(outside, renders).signal, Signal.RED)
+        self.assertEqual(visibility.summarize_visible_points(outside, renders, mesh=RENDER_MESH).signal, Signal.RED)
 
 
 # MARK: - 2か所で計算する物が、同じ答えになる

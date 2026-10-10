@@ -705,10 +705,13 @@ def _plane_depth(local_points: np.ndarray, owners: np.ndarray, fallback: np.ndar
 
 
 def summarize_visible_points(points, renders: Mapping[str, tuple[Camera, DepthBuffer]], *,
+                             mesh: tuple[np.ndarray, np.ndarray],
                              name: str = VISIBLE_POINTS_NAME, signal_if_visible: Signal = Signal.RED,
-                             epsilon: float = thresholds.VISIBILITY_DEPTH_EPSILON, mesh=None) -> Measurement:
+                             epsilon: float = thresholds.VISIBILITY_DEPTH_EPSILON) -> Measurement:
     """問題の点（赤のめり込みの場所など）が、カメラから見えるかをまとめる。
-    mesh（描いたときと同じメッシュ）は visible_points と同じ。見落としを減らすため、なるべく渡す。
+    mesh=(vertices, triangles)（描いたときと同じメッシュ）は必ず渡す（visible_points の説明）。
+    ピクセルの中心の奥行きで比べると、斜めの面の上の見える点を「隠れている」とまちがえ、
+    見える問題を見落とすことがあるため、まとめ（信号を決める所）では、面のちょうどの奥行きで比べる。
     name は結果の名前（英語の小文字・数字・_ だけ。例 "visible_penetration"）。決まりに合わないときは ValueError。
 
     値：どれか1つのカメラから見える点の数（count）。
@@ -730,6 +733,8 @@ def summarize_visible_points(points, renders: Mapping[str, tuple[Camera, DepthBu
     array = _as_points(points, "points")
     margin = _epsilon(epsilon)
     surface_mesh = _optional_mesh(mesh)
+    if surface_mesh is None:
+        raise ValueError("mesh=(vertices, triangles) を渡してください（見える問題を見落とさないため、まとめでは必ず使う）")
     if not isinstance(signal_if_visible, Signal) or signal_if_visible not in (Signal.YELLOW, Signal.RED):
         raise ValueError(f"signal_if_visible は Signal.RED か Signal.YELLOW にしてください（いまは {signal_if_visible!r}。"
                          "見える問題を緑や灰にはしない）")

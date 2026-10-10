@@ -370,7 +370,7 @@ class LookupAliasTest(unittest.TestCase):
 
     def test_vrm(self):
         expected = {
-            "hips": "下半身", "spine": "上半身", "chest": "上半身2", "neck": "首", "head": "頭",
+            "hips": "センター", "spine": "上半身", "chest": "上半身2", "neck": "首", "head": "頭",
             "leftShoulder": "左肩", "leftUpperArm": "左腕", "leftLowerArm": "左ひじ", "leftHand": "左手首",
             "rightHand": "右手首", "leftUpperLeg": "左足", "leftLowerLeg": "左ひざ", "leftFoot": "左足首",
             "leftToes": "左つま先", "rightToes": "右つま先", "leftEye": "左目", "rightEye": "右目",
@@ -393,7 +393,7 @@ class LookupAliasTest(unittest.TestCase):
 
     def test_vroid(self):
         expected = {
-            "J_Bip_C_Hips": "下半身", "J_Bip_C_Spine": "上半身", "J_Bip_C_Chest": "上半身2", "J_Bip_C_Neck": "首",
+            "J_Bip_C_Hips": "センター", "J_Bip_C_Spine": "上半身", "J_Bip_C_Chest": "上半身2", "J_Bip_C_Neck": "首",
             "J_Bip_C_Head": "頭", "J_Bip_L_Shoulder": "左肩", "J_Bip_R_UpperArm": "右腕", "J_Bip_L_LowerArm": "左ひじ",
             "J_Bip_L_Hand": "左手首", "J_Bip_L_Thumb1": "左親指０", "J_Bip_L_Thumb2": "左親指１",
             "J_Bip_R_Thumb3": "右親指２", "J_Bip_L_Index1": "左人指１", "J_Bip_L_Middle2": "左中指２",
@@ -417,7 +417,7 @@ class LookupAliasTest(unittest.TestCase):
 
     def test_mixamo(self):
         expected = {
-            "Hips": "下半身", "Spine": "上半身", "Spine1": "上半身2", "Neck": "首", "Head": "頭",
+            "Hips": "センター", "Spine": "上半身", "Spine1": "上半身2", "Neck": "首", "Head": "頭",
             "LeftShoulder": "左肩", "LeftArm": "左腕", "LeftForeArm": "左ひじ", "LeftHand": "左手首",
             "RightForeArm": "右ひじ", "LeftHandThumb1": "左親指０", "LeftHandThumb2": "左親指１",
             "LeftHandThumb3": "左親指２", "LeftHandIndex1": "左人指１", "RightHandMiddle2": "右中指２",
@@ -634,11 +634,11 @@ class MapBonesTest(unittest.TestCase):
         self.assertEqual(set(result.known_extras), {"J_Bip_C_UpperChest", "J_Sec_L_Bust1", "J_Sec_L_Bust2",
                                                     "J_Sec_R_Bust1", "J_Sec_R_Bust2", "J_Sec_Hair1_01",
                                                     "J_Sec_Hair2_01"})
-        self.assertEqual(result.mapping["J_Bip_C_Hips"], "下半身")
+        self.assertEqual(result.mapping["J_Bip_C_Hips"], "センター")
         self.assertEqual(result.mapping["J_Bip_L_Thumb1"], "左親指０")
         self.assertEqual(result.mapping["J_Bip_R_Little3"], "右小指３")
         self.assertEqual(len(result.mapping), 5 + 2 + 2 * (8 + 15))
-        self.assertEqual(result.missing_standard, ("センター", "両目") + STANDARD_LEG_IK)
+        self.assertEqual(result.missing_standard, ("下半身", "両目") + STANDARD_LEG_IK)
         self.assertEqual(result.missing_semi_standard, (
             "全ての親", "グルーブ", "腰",
             "左肩P", "左腕捩", "左手捩", "左ダミー", "右肩P", "右腕捩", "右手捩", "右ダミー",
@@ -664,7 +664,7 @@ class MapBonesTest(unittest.TestCase):
                 self.assertEqual(len(result.known_extras), 2 + 2 * (1 + 5))
                 self.assertEqual(len(result.mapping), 5 + 2 * (8 + 15))
                 self.assertFalse(result.is_semi_standard_compliant)
-                self.assertEqual(result.missing_standard, ("センター", "両目", "左目", "右目") + STANDARD_LEG_IK)
+                self.assertEqual(result.missing_standard, ("下半身", "両目", "左目", "右目") + STANDARD_LEG_IK)
 
     def test_vrm1_and_vrm0_models(self):
         for names, version in ((VRM1, "1.0"), (VRM0, "0.x")):
@@ -832,9 +832,27 @@ class MapBonesTest(unittest.TestCase):
             self.assertEqual(result.missing_standard, base.missing_standard)
             self.assertEqual(result.missing_semi_standard, base.missing_semi_standard)
 
+    def test_humanoid_names_match_app_human_bones(self):
+        """VRM のヒューマノイドの名前は、紅魔館 convert_pmx.py の HUMAN_BONES が最初に探す骨と同じ骨に対応する
+        （hips ← センター。脚は足D より先に、VMD で動かす 足・ひざ・足首 に対応させる）"""
+        expected = {
+            "hips": "センター", "spine": "上半身", "chest": "上半身2", "neck": "首", "head": "頭",
+            "leftEye": "左目", "rightEye": "右目", "leftShoulder": "左肩", "rightShoulder": "右肩",
+            "leftUpperArm": "左腕", "rightUpperArm": "右腕", "leftLowerArm": "左ひじ", "rightLowerArm": "右ひじ",
+            "leftHand": "左手首", "rightHand": "右手首",
+            "leftUpperLeg": "左足", "rightUpperLeg": "右足", "leftLowerLeg": "左ひざ", "rightLowerLeg": "右ひざ",
+            "leftFoot": "左足首", "rightFoot": "右足首",
+        }
+        for name, canonical in expected.items():
+            with self.subTest(name=name):
+                self.assertEqual(lookup(name), canonical)
+        for name in ("hips", "J_Bip_C_Hips", "mixamorig:Hips"):
+            with self.subTest(name=name):
+                self.assertNotEqual(lookup(name), "下半身")
+
     def test_by_canonical_is_in_canonical_order(self):
         result = map_bones(["J_Bip_C_Head", "J_Bip_L_Hand", "J_Bip_C_Hips", "J_Bip_R_Hand"])
-        self.assertEqual(list(result.by_canonical), ["下半身", "頭", "左手首", "右手首"])
+        self.assertEqual(list(result.by_canonical), ["センター", "頭", "左手首", "右手首"])
         self.assertEqual(result.by_canonical["左手首"], "J_Bip_L_Hand")
 
     def test_result_is_frozen(self):

@@ -994,9 +994,34 @@ class SummaryTest(unittest.TestCase):
         self.renders = render_views(self.vertices, self.triangles, self.views)
         self.on_front = [0.05, -0.1, 0.2]  # 前の面の上（前から見える）
         self.inside = [0.0, 0.0, 0.0]  # 体の中（服の下のめり込みのような物。どこからも見えない）
+        self.mesh = (self.vertices, self.triangles)
+
+    def summarize(self, points, renders, **kwargs):
+        return summarize_visible_points(points, renders, mesh=self.mesh, **kwargs)
+
+    def test_mesh_is_required(self):
+        """まとめでは mesh を必ず使う（ピクセルの中心の奥行きでは、斜めの面の見える点を見落とすことがあるため）"""
+        with self.assertRaises(TypeError):
+            summarize_visible_points([self.on_front], self.renders)
+        with self.assertRaises(ValueError):
+            summarize_visible_points([self.on_front], self.renders, mesh=None)
+
+    def test_point_on_slanted_visible_surface_is_red(self):
+        """斜めの面の上にある見える点を、隠れているとまちがえない（粗い画像でも）"""
+        vertices = np.array([[-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]])
+        triangles = np.array([[0, 1, 2], [0, 2, 3]])
+        camera = look_at((0.0, -4.0, 0.0), (0.0, 0.0, 0.0), width=16, height=16, fov_deg=40)
+        renders = {"front": (camera, rasterize(vertices, triangles, camera))}
+        # 面の上の点（y = z の面）。ピクセルの中心からずれた位置にある
+        points = np.array([[0.13, 0.37, 0.37], [-0.21, -0.29, -0.29], [0.4, 0.05, 0.05]])
+        coarse = visible_points(points, renders["front"][1], camera)
+        self.assertFalse(coarse.all())  # ピクセルの中心で比べると、見える点を隠れているとまちがえる
+        result = summarize_visible_points(points, renders, mesh=(vertices, triangles))
+        self.assertEqual(result.signal, Signal.RED)
+        self.assertEqual(result.value, 3.0)
 
     def test_visible_problem_is_red(self):
-        result = summarize_visible_points([self.on_front, self.inside], self.renders)
+        result = self.summarize([self.on_front, self.inside], self.renders)
         self.assertEqual(result.signal, Signal.RED)
         self.assertEqual(result.value, 1.0)
         self.assertEqual(result.unit, "count")
@@ -1007,27 +1032,27 @@ class SummaryTest(unittest.TestCase):
         np.testing.assert_array_equal(visible_from_any([self.on_front, self.inside], self.renders), [True, False])
 
     def test_hidden_problem_is_only_recorded(self):
-        result = summarize_visible_points([self.inside], self.renders)
+        result = self.summarize([self.inside], self.renders)
         self.assertEqual(result.signal, Signal.GREEN)
         self.assertEqual(result.value, 0.0)
         self.assertEqual(result.details["hidden_count"], 1)
         back_only = {"back": self.renders["back"]}
-        self.assertEqual(summarize_visible_points([self.on_front], back_only).signal, Signal.GREEN)
+        self.assertEqual(self.summarize([self.on_front], back_only).signal, Signal.GREEN)
 
     def test_signal_if_visible(self):
-        result = summarize_visible_points([self.on_front], self.renders, signal_if_visible=Signal.YELLOW)
+        result = self.summarize([self.on_front], self.renders, signal_if_visible=Signal.YELLOW)
         self.assertEqual(result.signal, Signal.YELLOW)
         with self.assertRaises(ValueError):
-            summarize_visible_points([self.on_front], self.renders, signal_if_visible="red")
+            self.summarize([self.on_front], self.renders, signal_if_visible="red")
         # 見える問題を緑や灰（測れなかった）にはできない
         for signal in (Signal.GREEN, Signal.GRAY):
             with self.subTest(signal=signal), self.assertRaises(ValueError):
-                summarize_visible_points([self.on_front], self.renders, signal_if_visible=signal)
+                self.summarize([self.on_front], self.renders, signal_if_visible=signal)
 
     def test_gray_outranks_yellow(self):
         """見える点の信号が黄でも、測れなかった点やカメラがあれば灰にする（赤 > 灰 > 黄 > 緑）"""
         outside = [0.0, 0.0, 100.0]  # どのカメラでも枠の外
-        result = summarize_visible_points([self.on_front, outside], self.renders, signal_if_visible=Signal.YELLOW)
+        result = self.summarize([self.on_front, outside], self.renders, signal_if_visible=Signal.YELLOW)
         self.assertEqual(result.signal, Signal.GRAY)
         self.assertEqual(result.value, 1.0)  # 見えた点の数は残す（少なくともこの数）
         self.assertIn("見える点が 1 個", result.reason)
@@ -1035,17 +1060,17 @@ class SummaryTest(unittest.TestCase):
         away = look_at((0, -3, 0), (0, -6, 0), width=48, height=48)  # 何も写らないカメラ
         renders = dict(self.renders)
         renders["away"] = (away, rasterize(self.vertices, self.triangles, away))
-        empty_view = summarize_visible_points([self.on_front], renders, signal_if_visible=Signal.YELLOW)
+        empty_view = self.summarize([self.on_front], renders, signal_if_visible=Signal.YELLOW)
         self.assertEqual(empty_view.signal, Signal.GRAY)
         self.assertIn("away", empty_view.reason)
         # 赤は灰より重いので、赤のまま
-        self.assertEqual(summarize_visible_points([self.on_front, outside], self.renders).signal, Signal.RED)
+        self.assertEqual(self.summarize([self.on_front, outside], self.renders).signal, Signal.RED)
 
     def test_bad_points_shape_is_not_green(self):
         """形の違う空の並び（列が無いなど）を「点が無い」として緑にしない"""
         for bad in (np.zeros((4, 0)), np.zeros((0, 2))):
             with self.subTest(shape=bad.shape), self.assertRaises(ValueError):
-                summarize_visible_points(bad, self.renders)
+                self.summarize(bad, self.renders)
 
     def test_renders_validation(self):
         camera, buffer = self.renders["front"]
@@ -1059,34 +1084,34 @@ class SummaryTest(unittest.TestCase):
         for label, renders in bad_cases.items():
             with self.subTest(case=label):
                 with self.assertRaises(ValueError):
-                    summarize_visible_points([self.on_front], renders)
+                    self.summarize([self.on_front], renders)
                 with self.assertRaises(ValueError):
                     visible_from_any([self.on_front], renders)
 
     def test_no_points_is_green(self):
-        result = summarize_visible_points(np.zeros((0, 3)), self.renders)
+        result = self.summarize(np.zeros((0, 3)), self.renders)
         self.assertEqual(result.signal, Signal.GREEN)
         self.assertEqual(result.value, 0.0)
 
     def test_gray_when_cannot_judge(self):
-        no_cameras = summarize_visible_points([self.on_front], {})
+        no_cameras = self.summarize([self.on_front], {})
         self.assertEqual(no_cameras.signal, Signal.GRAY)
         self.assertIsNone(no_cameras.value)
 
         away = look_at((0, -3, 0), (0, -6, 0), width=48, height=48)  # 体の反対を見ている
         renders = dict(self.renders)
         renders["away"] = (away, rasterize(self.vertices, self.triangles, away))
-        empty_view = summarize_visible_points([self.inside], renders)
+        empty_view = self.summarize([self.inside], renders)
         self.assertEqual(empty_view.signal, Signal.GRAY)
         self.assertIn("away", empty_view.reason)
         self.assertEqual(empty_view.details["empty_views"], ["away"])
 
         outside = [0.0, 0.0, 100.0]  # どのカメラでも枠の外（ずっと上）
-        out = summarize_visible_points([self.inside, outside], self.renders)
+        out = self.summarize([self.inside, outside], self.renders)
         self.assertEqual(out.signal, Signal.GRAY)
         self.assertEqual(out.details["unmeasured_count"], 1)
         # 見える点があれば、灰の理由があっても赤（赤 > 灰）
-        both = summarize_visible_points([self.on_front, outside], self.renders)
+        both = self.summarize([self.on_front, outside], self.renders)
         self.assertEqual(both.signal, Signal.RED)
         self.assertEqual(both.value, 1.0)
         self.assertIn("枠の外", both.reason)
