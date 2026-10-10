@@ -126,6 +126,8 @@ blender_ai_tools/      拡張機能の本体（このフォルダを zip にし�
   bones/               A3 骨の辞書（MMD 準標準・VRM・Mixamo）
   provenance/          A15 道具の版と再現性の記録
   measure/             A4 測る道具箱（results.py：信号と結果の形）
+  model/               A1 モデルの登録カード、Blender から形・骨・ウェイトを取り出す所（extract_bpy.py）
+  export/              E1 書き出し（convert_blend.py を呼ぶ）、E2 往復の確認
   ui/                  （予定）パネル・オペレーター・翻訳の表
   （機能ごとのフォルダ：export/ など。予定）
 tests/
@@ -133,7 +135,7 @@ tests/
   shapes.py            テスト用の形（箱・球・格子）
   unit/                bpy なしのテスト
   blender/             Blender の中で動かすテスト
-  fixtures/            （予定）見本を作るスクリプト
+  fixtures/            見本を作るスクリプト（mmd_model.py：準標準の骨を持つ、試し用の人型モデル）
 tools/                 （予定）開発用のスクリプト
 ```
 
@@ -145,7 +147,7 @@ tools/                 （予定）開発用のスクリプト
   - 外のパッケージは wheel にして同梱する（numpy は Blender に入っている物を使う）。
   - ファイルや通信を使うときは、manifest の `permissions` に理由を書く。
 - **bpy を使う所と使わない所を分けます。** 測る計算は numpy の配列を受け取って数字を返す形にし、bpy から配列を取り出す所は薄くします。
-  - bpy・bmesh・mathutils など Blender だけのモジュールを import してよいのは、`ui/` の下と、名前が `_bpy.py` で終わるファイルだけです。
+  - bpy・bmesh・mathutils・pxr（USD）など Blender の中にだけあるモジュールを import してよいのは、`ui/` の下と、名前が `_bpy.py` で終わるファイルだけです。
   - ほかのファイルは、ファイルの先頭（関数の外）で `ui` や `*_bpy` を読み込みません。bpy なしで読み込めるようにするためです。
   - `exec`・`eval`・`compile`・`__import__` は使いません。
   - これらは `tests/unit/test_code_rules.py` が確かめます。
@@ -182,6 +184,7 @@ tools/                 （予定）開発用のスクリプト
 - 拡張機能の zip を作る：`blender --command extension build --source-dir blender_ai_tools --output-dir dist`
 - Mac mini では、`blender` を `/Applications/Blender.app/Contents/MacOS/Blender` に読み替えます。
 - mmd_tools や紅魔館のファイルが要るテストは、無いときは理由を出して飛ばします。飛ばしたテストは合格と数えません。
+- 紅魔館の場所は、環境変数 `BLENDER_AI_TOOLS_KOUMAKAN_REPO` で渡します（`tools/model-converter/convert_blend.py` と `convert_pmx.py` があるフォルダ）。本物の書き出しを使うテストは、これが無いと飛ばします。クラウドでは、ユーザーからもらった2つのファイルを、リポジトリの外の作業用フォルダに置いて使ってよい（リポジトリにはコピーしない）。
 
 ### 見本
 

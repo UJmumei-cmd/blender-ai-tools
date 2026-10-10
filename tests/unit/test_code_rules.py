@@ -14,6 +14,7 @@ PACKAGE_DIR = Path(__file__).resolve().parents[2] / "blender_ai_tools"
 BLENDER_MODULES = {
     "bpy", "bmesh", "mathutils", "addon_utils", "bpy_extras", "bpy_types", "bl_math", "bl_operators", "bl_ui",
     "bl_keymap_utils", "gpu", "gpu_extras", "idprop", "aud", "bgl", "blf", "imbuf", "freestyle", "rna_info", "_bpy",
+    "pxr",  # USD。Blender の中の Python にだけ入っている
 }
 FORBIDDEN_CALLS = {"exec", "eval", "compile", "__import__"}
 

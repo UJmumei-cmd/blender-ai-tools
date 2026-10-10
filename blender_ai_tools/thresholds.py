@@ -27,6 +27,10 @@ MAX_BONE_NAME_LENGTH = 256
 MAX_BONE_INFLUENCES = 4
 # 読み戻した形のずれの上限（ロードマップ段階1 基準4）
 ROUNDTRIP_MAX_DEVIATION = mm(0.5)
+# 往復の確認で、書き出した点と元の点を「同じ点」とみなす距離（休みの姿勢。float32 の誤差より大きく、0.5mm よりずっと小さい）（仮）
+ROUNDTRIP_MATCH_DISTANCE = mm(0.01)
+# convert_blend.py を待つ時間の上限（秒）。過ぎたら止めて、失敗として報告する（仮）
+CONVERT_TIMEOUT_SECONDS = 600.0
 
 # MARK: - 再現性（A15）
 
