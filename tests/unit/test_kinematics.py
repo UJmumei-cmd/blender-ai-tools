@@ -244,17 +244,92 @@ class KneeBendTest(unittest.TestCase):
         ankle = knee + [0.2, 0.3, -0.3]
         self.assertAlmostEqual(float(km.knee_bend(hip, knee, ankle, LEFT)), 45.0, places=12)
 
-    def test_wide_stance_limitation_from_docstring(self):
-        # 分かっている弱点（仕様どおり、腰の左右を軸にする）：太ももが真横に近いと、符号があてにならない。
-        # どちらも、すねが真下の、ふつうに 90 度曲げた形。ひざの測り方を良くしたら、docstring とこのテストを一緒に直す
-        for yaw_deg, expected in ((-5.0, 90.0), (5.0, -90.0)):
+    def test_wide_stance_is_not_called_reverse(self):
+        """太ももが真横に近い（脚を真横に大きく開く）と、位置だけではひざの軸が決まらないので、測らない（灰）。
+        ふつうに 90 度曲げた形を、逆曲がり（赤）とまちがえない"""
+        bends = []
+        for yaw_deg in (-5.0, 5.0):
             t = math.radians(yaw_deg)
             hip = np.array([0.1, 0.0, 1.0])
             knee = hip + 0.45 * np.array([math.cos(t), math.sin(t), 0.0])  # 真横（+X）から yaw_deg 度。正は後ろ（+Y）
             ankle = knee + [0.0, 0.0, -0.45]
             with self.subTest(yaw_deg=yaw_deg):
                 self.assertAlmostEqual(float(km.angle_at(hip, knee, ankle)), 90.0, places=9)  # 3次元ではどちらも 90 度
-                self.assertAlmostEqual(float(km.knee_bend(hip, knee, ankle, LEFT)), expected, places=9)
+                bend = float(km.knee_bend(hip, knee, ankle, LEFT))
+                self.assertTrue(math.isnan(bend))
+                bends.append(bend)
+        result = km.summarize_reverse_bend(bends)
+        self.assertNotEqual(result.signal, Signal.RED)
+        self.assertEqual(result.signal, Signal.GRAY)
+
+    def test_abducted_leg_keeps_true_bend(self):
+        """脚を横に開いても（ねじらなければ）、ひざの曲がりは本当の値になる。開きすぎは測らない"""
+        limit = thresholds.KNEE_AXIS_MIN_ANGLE_DEG
+        for abduct in (20.0, 45.0, 90.0 - limit - 1.0):
+            for bend in (-30.0, 0.0, 45.0, 90.0):
+                hip, knee, ankle = leg(bend)
+                # 左脚を外（キャラの左 +X）へ開く：-Y まわりに回す
+                posed = [hip + rotate(point - hip, [0, -1, 0], abduct) for point in (hip, knee, ankle)]
+                with self.subTest(abduct=abduct, bend=bend):
+                    self.assertGreater(posed[1][0], hip[0])  # ひざは外（+X）へ出ている
+                    self.assertAlmostEqual(float(km.knee_bend(*posed, LEFT)), bend, places=9)
+        hip, knee, ankle = leg(90.0)
+        too_wide = [hip + rotate(point - hip, [0, -1, 0], 90.0 - limit + 1.0) for point in (hip, knee, ankle)]
+        self.assertTrue(math.isnan(float(km.knee_bend(*too_wide, LEFT))))
+
+    def test_flexed_and_abducted_leg_keeps_sign(self):
+        """前に上げて横に開いた脚（ガニ股のしゃがみなど）でも、ふつうの曲がりは正、逆曲がりは負のまま"""
+        for flex in (30.0, 60.0, 90.0):
+            for abduct in (20.0, 40.0):
+                for bend, positive in ((60.0, True), (110.0, True), (-20.0, False)):
+                    hip, knee, ankle = leg(bend)
+                    # 太ももを前（-Y）へ上げる：+X まわりに回す（ひざは前へ）。そのあと外へ開く
+                    flexed = [hip + rotate(point - hip, [1, 0, 0], -flex) for point in (hip, knee, ankle)]
+                    posed = [hip + rotate(point - hip, [0, -1, 0], abduct) for point in flexed]
+                    with self.subTest(flex=flex, abduct=abduct, bend=bend):
+                        self.assertLess(posed[1][1], hip[1])  # ひざは前（-Y）
+                        result = float(km.knee_bend(*posed, LEFT))
+                        self.assertEqual(result > 0.0, positive, result)
+
+    def test_rotation_method_handles_twist_and_side_splits(self):
+        """太ももの骨の回転を使えば、真横に上げてねじった脚でも、正しい曲がりになる"""
+        rest_hip, rest_knee, _ = leg(0.0)
+        rest_axis = km.knee_rest_axis(rest_hip, rest_knee, LEFT)
+        np.testing.assert_allclose(rest_axis, [1.0, 0.0, 0.0], atol=1e-15)
+        abduct = quat([0, -1, 0], 90.0)  # 太ももを真横（+X）へ
+        twist = quat([1, 0, 0], 90.0)  # 真横に上げたあと、太ももの向き（+X）まわりにねじる
+        for rotation in (abduct, quat_mul(twist, abduct)):
+            for bend in (-30.0, 0.0, 45.0, 90.0):
+                hip, knee, ankle = leg(bend)
+                posed = [hip + km.quat_rotate(rotation, point - hip) for point in (hip, knee, ankle)]
+                with self.subTest(rotation=rotation.tolist(), bend=bend):
+                    np.testing.assert_allclose((posed[1] - hip) / 0.5, [1.0, 0.0, 0.0], atol=1e-12)  # 太ももは真横
+                    measured = float(km.knee_bend_from_thigh(*posed, rest_axis=rest_axis, thigh_rotation=rotation))
+                    self.assertAlmostEqual(measured, bend, places=9)
+                    if bend != 0.0:
+                        # 位置だけでは測らない（灰）。逆曲がりとまちがえない
+                        self.assertTrue(math.isnan(float(km.knee_bend(*posed, LEFT))))
+
+    def test_rotation_method_per_frame(self):
+        bends = [10.0, 45.0, -15.0]
+        hip, knee, ankle = legs(bends)
+        rotations = np.array([quat([0, -1, 0], 30.0 * i) for i in range(3)])
+        posed = [np.array([h + km.quat_rotate(r, x - h) for h, x, r in zip(hip, part, rotations)])
+                 for part in (hip, knee, ankle)]
+        result = km.knee_bend_from_thigh(*posed, rest_axis=[1.0, 0.0, 0.0], thigh_rotation=rotations)
+        np.testing.assert_allclose(result, bends, atol=1e-9)
+
+    def test_knee_rest_axis_and_limits(self):
+        with self.assertRaises(ValueError):
+            km.knee_rest_axis([0, 0, 1], [0.5, 0, 1], LEFT)  # 太ももが真横
+        for bad in (90.0, -1.0, math.nan):
+            with self.subTest(min_angle_deg=bad), self.assertRaises(ValueError):
+                km.knee_bend(*leg(30.0), LEFT, min_angle_deg=bad)
+        # 0 にすると、ほぼ真横でも測る（前の測り方と同じ）
+        hip = np.array([0.1, 0.0, 1.0])
+        knee = hip + 0.45 * np.array([math.cos(math.radians(30.0)), math.sin(math.radians(30.0)), 0.0])
+        self.assertFalse(math.isnan(float(km.knee_bend(hip, knee, knee + [0, 0, -0.45], LEFT, min_angle_deg=0.0))))
+
 
     def test_degenerate_gives_nan(self):
         # 太ももが横（lateral の向き）を向く：ひざの軸まわりの向きが決まらない
@@ -961,6 +1036,23 @@ class SummarizeJumpsTest(unittest.TestCase):
         self.assertEqual(m.value, float(mask.size))
         self.assertEqual(m.details["jumps"].shape, (mask.size, 2))
         self.assertLess(peak / mask.size, 48.0)
+
+
+class QuatRotateTest(unittest.TestCase):
+    def test_matches_rotation_matrix(self):
+        rng = np.random.default_rng(RNG_SEED)
+        for _ in range(20):
+            axis, deg, v = rng.normal(size=3), float(rng.uniform(-180, 180)), rng.normal(size=3)
+            np.testing.assert_allclose(km.quat_rotate(quat(axis, deg), v), rotate(v, axis, deg), atol=1e-12)
+
+    def test_examples_and_sign(self):
+        q = quat([0, 0, 1], 90.0)
+        np.testing.assert_allclose(km.quat_rotate(q, [1, 0, 0]), [0, 1, 0], atol=1e-15)
+        np.testing.assert_allclose(km.quat_rotate(-q, [1, 0, 0]), [0, 1, 0], atol=1e-15)  # q と -q は同じ回転
+        np.testing.assert_allclose(km.quat_rotate(3.0 * q, [1, 0, 0]), [0, 1, 0], atol=1e-15)  # 長さ 1 でなくてよい
+        np.testing.assert_allclose(km.quat_rotate([q, q], [[1, 0, 0], [0, 1, 0]]), [[0, 1, 0], [-1, 0, 0]], atol=1e-15)
+        with self.assertRaises(ValueError):
+            km.quat_rotate([0, 0, 0, 0], [1, 0, 0])
 
 
 if __name__ == "__main__":

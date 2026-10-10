@@ -235,27 +235,88 @@ def hinge_bend(upper: Any, middle: Any, lower: Any, axis: Any) -> np.ndarray:
     return _hinge_bend(pu, pm, pl, pa)
 
 
-def knee_bend(hip: Any, knee: Any, ankle: Any, lateral: Any) -> np.ndarray:
-    """ひざの、符号つきの曲がり（度）。ふつうの曲がりが正、逆曲がりが負、まっすぐが 0。
+def _knee_axis(hip: np.ndarray, knee: np.ndarray, lateral: np.ndarray, min_angle_deg: float) -> np.ndarray:
+    """太ももに垂直になるように傾けた、ひざの軸（長さ 1）。
+    lateral から、太ももの向きの成分を引いた物。太ももを横に開いても、ねじらなければ本当のひざの軸と同じ向きになる。
+    太ももと lateral の間の角度が min_angle_deg より小さいとき（軸が決まらない）、向きが決まらないときは NaN"""
+    thigh, thigh_ok = _unit(knee - hip)
+    side, side_ok = _unit(lateral)
+    axis = side - _dot(side, thigh)[..., None] * thigh
+    sine = _norm(axis)  # 太ももと lateral の間の角度の sin
+    ok = thigh_ok & side_ok & (sine >= math.sin(math.radians(min_angle_deg)))
+    return np.where(ok[..., None], axis / np.where(ok, sine, 1.0)[..., None], np.nan)
+
+
+def knee_bend(hip: Any, knee: Any, ankle: Any, lateral: Any, *,
+              min_angle_deg: float = thresholds.KNEE_AXIS_MIN_ANGLE_DEG) -> np.ndarray:
+    """ひざの、符号つきの曲がり（度）。ふつうの曲がりが正、逆曲がりが負、まっすぐが 0。位置だけで測る。
 
     - hip・knee・ankle：足・ひざ・足首の位置（MMD 準標準の 左足・左ひざ・左足首 など）。(F, 3) か (3,)。
     - lateral：キャラの左を向くベクトル（例：左足の位置 − 右足の位置）。フレームごと (F, 3) か、全部に同じ (3,)。
       長さは何でもよい（向きだけを使う）。左脚・右脚のどちらにも、同じ「左向き」を渡す。
     - ふつうの曲がり：太ももが下を向いているとき、足首が後ろ（モデルは -Y を向くので +Y）に動く向き。
-      これは lateral（+X）まわりの右手の回りなので、hinge_bend(hip, knee, ankle, axis=lateral) が正になる。
+      これは lateral（+X）まわりの右手の回りなので、ひざの軸 = lateral のとき正になる。
       例：腰 (0, 0, 1)、ひざ (0, 0, 0.5)、足首 (0, 0.5, 0.5)（すねが後ろへ水平）なら +90。足首が (0, -0.5, 0.5)（前）なら -90。
+    - ひざの軸は、lateral を太ももに垂直になるように傾けた向き（_knee_axis）。脚を横に開いた姿勢（ガニ股・開脚）でも、
+      太ももをねじっていなければ正しい向きになる。
+    - 太ももが lateral に近い向き（min_angle_deg 以内。脚を真横に大きく開く・真横に上げる）では、位置だけでは
+      ひざの軸が決まらない（太ももをどれだけねじったか分からない）ので、NaN（測れない＝灰）にする。
+      ふつうの曲がりを逆曲がり（赤）とまちがえないため。そうした姿勢も測るときは、太ももの骨の回転を使う
+      knee_bend_from_thigh を使う。
     - 体全体が向きを変えても、lateral も一緒に回っていれば、答えは変わらない。
-    - 太ももを強くひねる・横に開く姿勢では、腰の左右から作った軸と本当のひざの軸がずれる。
-      太ももが lateral に近い向き（脚を横に大きく開く・真横に上げる）ほど、映した太ももが短くなり、符号もあてにならない。
-      例：太ももが真横（+X）から 5 度後ろ（+Y）を向き、すねが真下（ふつうに 90 度曲げた形）だと -90（逆曲がりに見える）。
-      NaN（測れない）になるのは、太ももが lateral とほぼ完全に同じ向き（PARALLEL_SINE_EPS 以下）のときだけ。
     """
     hp = _as_vectors(hip, "hip")
     kn = _as_vectors(knee, "knee")
     an = _as_vectors(ankle, "ankle")
     la = _as_vectors(lateral, "lateral")
+    limit = _as_real(min_angle_deg, "min_angle_deg", nonnegative=True)
+    if limit >= 90.0:
+        raise ValueError(f"min_angle_deg は 90 度より小さくしてください（いまは {limit}）")
     _broadcast("hip・knee・ankle・lateral", hp, kn, an, la)
-    return _hinge_bend(hp, kn, an, la)
+    return _hinge_bend(hp, kn, an, _knee_axis(hp, kn, la, limit))
+
+
+def knee_rest_axis(hip: Any, knee: Any, lateral: Any, *,
+                   min_angle_deg: float = thresholds.KNEE_AXIS_MIN_ANGLE_DEG) -> np.ndarray:
+    """休みの姿勢での、ひざの軸（長さ 1）。knee_bend_from_thigh に渡す。
+    lateral（キャラの左）を、休みの姿勢の太ももに垂直になるように傾けた向き。決まらないときは ValueError"""
+    hp = _as_vectors(hip, "hip")
+    kn = _as_vectors(knee, "knee")
+    la = _as_vectors(lateral, "lateral")
+    limit = _as_real(min_angle_deg, "min_angle_deg", nonnegative=True)
+    _broadcast("hip・knee・lateral", hp, kn, la)
+    axis = _knee_axis(hp, kn, la, limit)
+    if not np.isfinite(axis).all():
+        raise ValueError("休みの姿勢のひざの軸が決まりません（太ももが左右の向きに近すぎるか、位置が重なっています）")
+    return axis
+
+
+def quat_rotate(q: Any, v: Any) -> np.ndarray:
+    """ベクトル v (..., 3) を、クォータニオン q (..., 4)（w, x, y, z）で回す。q は長さ 1 でなくてもよい"""
+    qq = _as_quaternions(q, "q")
+    vv = _as_vectors(v, "v")
+    _broadcast("q・v", qq[..., 1:], vv)
+    qq = qq / _quat_norms(qq, "q")[..., None]
+    w, u = qq[..., :1], qq[..., 1:]
+    # v' = v + 2w (u × v) + 2 u × (u × v)
+    t = 2.0 * np.cross(u, vv)
+    return vv + w * t + np.cross(u, t)
+
+
+def knee_bend_from_thigh(hip: Any, knee: Any, ankle: Any, *, rest_axis: Any, thigh_rotation: Any) -> np.ndarray:
+    """ひざの、符号つきの曲がり（度）。太ももの骨の回転を使うので、太ももをねじった・真横に上げた姿勢でも測れる。
+
+    - rest_axis：休みの姿勢のひざの軸（knee_rest_axis で作る）(3,)。
+    - thigh_rotation：太ももの骨（足 または 足D）を、休みの姿勢から今の姿勢へ回す、世界の向きでの回転
+      （クォータニオン w, x, y, z）。(F, 4) か (4,)。Blender では、骨の世界の向き（ポーズ）× 休みの世界の向きの逆。
+    - ひざの軸 = thigh_rotation で回した rest_axis。符号の決まりは knee_bend と同じ（ふつうが正、逆曲がりが負）。
+    """
+    hp = _as_vectors(hip, "hip")
+    kn = _as_vectors(knee, "knee")
+    an = _as_vectors(ankle, "ankle")
+    axis = quat_rotate(thigh_rotation, rest_axis)
+    _broadcast("hip・knee・ankle・軸", hp, kn, an, axis)
+    return _hinge_bend(hp, kn, an, axis)
 
 
 def reverse_bend_frames(bend_deg: Any, *, tolerance_deg: float = thresholds.REVERSE_BEND_TOLERANCE_DEG) -> np.ndarray:

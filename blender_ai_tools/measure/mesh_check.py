@@ -502,6 +502,7 @@ def summarize_degenerate(vertices: Any, triangles: Any, area: float = thresholds
 
 def summarize_non_manifold(triangles: Any) -> Measurement:
     """3つ以上の面が使う辺（名前 "non_manifold_edges"）。1つでもあれば黄（その近くでは中か外かが当てにならない）。
+    赤にしないのは、MMD のモデルにはよくあり、壊れていないモデルでも赤が出てしまうため（ユーザーと決めた）。
     三角形が1つも無いときは灰"""
     t = as_triangles(triangles)
     edges = non_manifold_edges(t)

@@ -4,7 +4,8 @@
     "名前の前の名前空間（mixamorig:・mixamorig1:・mixamorig12: など、最後の ':' までの部分）は、比べるときに外します（bones.normalize()）。",
     "Spine2・指の4番目（指先）・HeadTop_End・LeftToe_End/RightToe_End は、準標準に対応する骨が無いので known_extras にしました。",
     "LeftLeg/RightLeg は Mixamo ではひざから下（＝左ひざ）ですが、mmd_tools の英語名では 左足 です。map_bones がほかの骨の名前から決めます（aliases_mmd.json の _notes）。",
-    "namespaces：この名前空間（後ろに数字が付いてもよい：mixamorig1・mixamorig12）が名前のすぐ前に付いた名前は、Mixamo の名前として読みます。mixamorig:LeftLeg は、ほかの骨の名前が無くても 左ひざ に決まります。"
+    "namespaces：この名前空間（後ろに数字が付いてもよい：mixamorig1・mixamorig12）が名前のすぐ前に付いた名前は、Mixamo の名前として読みます。mixamorig:LeftLeg は、ほかの骨の名前が無くても 左ひざ に決まります。",
+    "つま先：VRM の toes・VRoid の ToeBase・Mixamo の ToeBase は指の付け根の骨で、MMD の「つま先」はつま先の先の骨です。位置は違いますが、ユーザーの確認のうえ、つま先に対応させます。脚の長さ（足 → つま先）を測るときは、その分の差が出ます。"
   ],
   "_sources": [
     "名前：saturday06/VRM-Addon-for-Blender（コミット 10bf3e7e）src/io_scene_vrm/common/human_bone_mapper/mixamo_mapping.py の表（LeftHandThumb1 は VRM 1.0 の Metacarpal＝親指０）。",
@@ -14,7 +15,9 @@
   "tables": {
     "mixamo": {
       "description": "Mixamo の骨の名前（名前空間を外した形）",
-      "namespaces": ["mixamorig"],
+      "namespaces": [
+        "mixamorig"
+      ],
       "aliases": {
         "Hips": "センター",
         "Spine": "上半身",

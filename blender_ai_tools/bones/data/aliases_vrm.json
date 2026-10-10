@@ -4,7 +4,8 @@
     "親指は、VRM 0.x と 1.0 で名前の意味が違います。0.x：leftThumbProximal＝親指０、leftThumbIntermediate＝親指１、leftThumbDistal＝親指２。1.0：leftThumbMetacarpal＝親指０、leftThumbProximal＝親指１、leftThumbDistal＝親指２。",
     "そのため、親指の名前は vrm0 と vrm1 の表に分けました（leftThumbDistal は同じなので vrm の表）。leftThumbProximal は1つの名前だけでは決まりません（lookup は None）。map_bones は、入力に leftThumbMetacarpal・rightThumbMetacarpal（1.0 だけの名前）があれば 1.0、leftThumbIntermediate・rightThumbIntermediate（0.x だけの名前）があれば 0.x として決めます。どちらも無い・両方あるときは決めず、ambiguous（ユーザーに聞く）にします。",
     "upperChest と jaw は、準標準に対応する骨が無いので known_extras にしました。J_Bip_C_UpperChest も同じです。",
-    "VRoid の J_Sec_（揺れ物）・J_Adj_（調整。J_Adj_L_FaceEye/J_Adj_R_FaceEye は目なので除く）・J_Opt_ で始まる骨は known_extra_prefixes で known_extras にします。"
+    "VRoid の J_Sec_（揺れ物）・J_Adj_（調整。J_Adj_L_FaceEye/J_Adj_R_FaceEye は目なので除く）・J_Opt_ で始まる骨は known_extra_prefixes で known_extras にします。",
+    "つま先：VRM の toes・VRoid の ToeBase・Mixamo の ToeBase は指の付け根の骨で、MMD の「つま先」はつま先の先の骨です。位置は違いますが、ユーザーの確認のうえ、つま先に対応させます。脚の長さ（足 → つま先）を測るときは、その分の差が出ます。"
   ],
   "_sources": [
     "VRM 0.x：vrm-c/vrm-specification（コミット 94e82dd3）specification/0.0/schema/vrm.humanoid.bone.schema.json の bone の enum。",
@@ -66,7 +67,10 @@
         "rightLittleIntermediate": "右小指２",
         "rightLittleDistal": "右小指３"
       },
-      "known_extras": ["upperChest", "jaw"]
+      "known_extras": [
+        "upperChest",
+        "jaw"
+      ]
     },
     "vrm0": {
       "description": "VRM 0.x の親指",
@@ -145,8 +149,14 @@
         "J_Bip_R_ToeBase": "右つま先",
         "J_Adj_R_FaceEye": "右目"
       },
-      "known_extras": ["J_Bip_C_UpperChest"],
-      "known_extra_prefixes": ["J_Sec_", "J_Adj_", "J_Opt_"]
+      "known_extras": [
+        "J_Bip_C_UpperChest"
+      ],
+      "known_extra_prefixes": [
+        "J_Sec_",
+        "J_Adj_",
+        "J_Opt_"
+      ]
     }
   }
 }

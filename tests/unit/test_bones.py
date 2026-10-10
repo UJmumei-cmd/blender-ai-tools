@@ -330,6 +330,33 @@ class LookupCanonicalTest(unittest.TestCase):
 
 
 class LookupAliasTest(unittest.TestCase):
+    def test_japanese_spelling_variants(self):
+        """漢字・カタカナの書き方の違い（肘・ヒジ＝ひじ、膝・ヒザ＝ひざ、人差指・人差し指＝人指、捻＝捩）。
+        左右の書き換えの形（肘.L など）も対応する"""
+        expected = {
+            "左肘": "左ひじ", "右肘": "右ひじ", "左ヒジ": "左ひじ", "右ヒジ": "右ひじ",
+            "左膝": "左ひざ", "右膝": "右ひざ", "左ヒザ": "左ひざ", "右ヒザ": "右ひざ",
+            "左膝D": "左ひざD", "右ヒザD": "右ひざD",
+            "左人差指１": "左人指１", "左人差指2": "左人指２", "右人差し指３": "右人指３",
+            "左腕捻": "左腕捩", "右手捻": "右手捩", "左腕捻1": "左腕捩1", "右手捻3": "右手捩3",
+            "肘.L": "左ひじ", "膝_R": "右ひざ", "膝D.L": "左ひざD", "人差指２.L": "左人指２", "腕捻.R": "右腕捩",
+        }
+        for name, canonical in expected.items():
+            with self.subTest(name=name):
+                self.assertEqual(lookup(name), canonical)
+        for tip in ("左人差指先", "右人差し指先"):
+            with self.subTest(name=tip):
+                self.assertIsNone(lookup(tip))
+                self.assertTrue(is_known_extra(tip))
+        # 書き方の違う名前と、共通の名前そのものが両方あるときは、共通の名前が勝つ（違う方は shadowed）
+        result = map_bones(["左ひじ", "左肘"])
+        self.assertEqual(result.mapping, {"左ひじ": "左ひじ"})
+        self.assertEqual(result.shadowed, {"左肘": "左ひじ"})
+        # 準標準の外の名前（肘あて など）は対応させない
+        for name in ("肘あて", "膝当て.L", "左ひじ飾り"):
+            with self.subTest(name=name):
+                self.assertIsNone(lookup(name))
+
     def test_every_alias_points_to_an_existing_canonical(self):
         names = set(canonical_names())
         count = 0
