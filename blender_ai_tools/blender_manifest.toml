@@ -10,3 +10,6 @@ type = "add-on"
 blender_version_min = "5.2.0"
 
 license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "モデルの写し・書き出したファイル・記録を読み書きし、書き出し用の Blender を動かす"
