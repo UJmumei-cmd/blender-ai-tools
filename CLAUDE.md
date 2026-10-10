@@ -134,6 +134,9 @@ blender_ai_tools/      拡張機能の本体（このフォルダを zip にし�
   measure/             A4 測る道具箱（results.py：信号と結果の形）
   model/               A1 モデルの登録カード、Blender から形・骨・ウェイトを取り出す所（extract_bpy.py）
   export/              E1 書き出し（convert_blend.py を呼ぶ）、E2 往復の確認
+  motion/              A5 確かめの動き（決まったポーズの並びと、ポーズごとの確かめ）
+  versions/            A6 版の管理と変更点の一覧（_v001 の保存、前の版との違い）
+  texts/               画面の文と報告の文（日本語と英語）。文の形はここだけに置く
   ui/                  （予定）パネル・オペレーター・翻訳の表
   （機能ごとのフォルダ：export/ など。予定）
 tests/
