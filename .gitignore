@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+
+# 拡張機能の zip（blender --command extension build の出力）
+dist/
+
+# 素材はコミットしない（利用条件があるため。CLAUDE.md 9章）
+*.blend
+*.blend1
+*.blend2
+*.pmx
+*.pmd
+*.vrm
+*.fbx
+*.obj
+*.vmd
+*.vpd
+*.bvh
+*.usdz
+*.usdc
+*.usda
+*.glb
+*.gltf
+*.png
+*.jpg
+*.jpeg
+*.tga
+*.bmp
+*.dds
+*.wav
+*.mp3
+*.mp4
+*.mov
+# 説明の画像だけは入れてよい
+!docs/**/*.png
+!docs/**/*.jpg

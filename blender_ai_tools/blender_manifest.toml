@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+
+id = "blender_ai_tools"
+version = "0.1.0"
+name = "AI の道具"
+tagline = "人型モデルの服の補正・動きでの確かめ・アプリへの書き出し"
+maintainer = "UJmumei-cmd"
+type = "add-on"
+
+blender_version_min = "5.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]

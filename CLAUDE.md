@@ -6,7 +6,7 @@
 
 - Blender 5.2 の拡張機能「AI の道具」です。人型のモデルの服の補正、動きでの確かめ、アプリ（紅魔館）への書き出しを扱います。
 - 画面は日本語です。英語にも切り替えられます。
-- 機能の番号は、ロードマップの番号（A1・B5・E1・M4 など）をそのまま使います。コード・テスト・コミットの文にも書きます。
+- 計画は `docs/roadmap.md`（ロードマップ）です。機能の番号は、ロードマップの番号（A1・B5・E1・M4 など）をそのまま使います。コード・テスト・コミットの文にも書きます。
 - コードはクラウドのセッションで書きます。本物のモデル・LM Studio・Jeff・アプリでの確認は Mac mini で行います。
 
 ## 2. いちばん大事な決まり
@@ -105,24 +105,26 @@
 - **Jeff は CPU でも動きます。** クラウドでも、Jeff の部分の試しと採点はできます。速さと「自信」の当たり具合は、Mac mini で測った値を正とします。
 - ふつうのテストは、記録した返事で動く「練習用の相手」で回します。本物の LLM・Jeff を使う試しは別に分け、ふつうのテストに混ぜません。
 
-## 6. 置き場所（予定）
+## 6. 置き場所
 
-まだコードはありません。最初に作るときは、次の形にします。
+「（予定）」は、まだ無いフォルダです。作ったら、この印を外します。
 
 ```
+docs/roadmap.md        ロードマップ（計画）
 blender_ai_tools/      拡張機能の本体（このフォルダを zip にして Blender に入れる）
   blender_manifest.toml
-  __init__.py
-  core/                bpy を使わない計算（numpy だけ）。ふつうの pytest で試せる
-  catalog/             A8 道具の目録（道具ごとの JSON スキーマ）
-  bones/               A3 骨の辞書（MMD 準標準・VRM・Mixamo）
-  ui/                  パネル・オペレーター・翻訳の表
-  （機能ごとのフォルダ：measure/・export/ など）
+  __init__.py          register()・unregister()。bpy はこの中で読み込む
+  core/                （予定）bpy を使わない計算（numpy だけ）。Blender の外でも試せる
+  catalog/             （予定）A8 道具の目録（道具ごとの JSON スキーマ）
+  bones/               （予定）A3 骨の辞書（MMD 準標準・VRM・Mixamo）
+  ui/                  （予定）パネル・オペレーター・翻訳の表
+  （機能ごとのフォルダ：measure/・export/ など。予定）
 tests/
+  run_in_blender.py    Blender の中で tests/ の下を全部動かす
   unit/                bpy なしのテスト
-  blender/             blender --background で動かすテスト
-  fixtures/            見本を作るスクリプト
-tools/                 開発用のスクリプト
+  blender/             Blender の中で動かすテスト
+  fixtures/            （予定）見本を作るスクリプト
+tools/                 （予定）開発用のスクリプト
 ```
 
 ## 7. コードの書き方
@@ -132,7 +134,7 @@ tools/                 開発用のスクリプト
   - パッケージの中は相対の import にし、`sys.path` を書き換えない。
   - 外のパッケージは wheel にして同梱する（numpy は Blender に入っている物を使う）。
   - ファイルや通信を使うときは、manifest の `permissions` に理由を書く。
-- **bpy を使う所と使わない所を分けます。** 測る計算は numpy の配列を受け取って数字を返す形にし、bpy から配列を取り出す所は薄くします。
+- **bpy を使う所と使わない所を分けます。** 測る計算は numpy の配列を受け取って数字を返す形にし、bpy から配列を取り出す所は薄くします。`blender_ai_tools/__init__.py` と `core/` では、ファイルの先頭で bpy を import しません（`tests/unit/test_package.py` が確かめます）。
 - 重い作業（全フレームの確かめ・焼き込み・書き出し）は、A10 で別の Blender（`--background`）に任せます。画面を固めません。途中で止めても、元のファイルが壊れないようにします。
 - コードの名前は英語、コメント・説明・画面の文は日本語（やさしい言葉）にします。convert_blend.py の書き方（日本語の docstring、型の注釈、`# MARK: -` の区切り）に合わせます。
 - 画面の文は翻訳の表を通します（日本語が元で、英語に切り替える）。
@@ -147,9 +149,13 @@ tools/                 開発用のスクリプト
 
 ### クラウド
 
-- Blender 5.2.2 LTS が `blender` で使えます（Python 3.13、numpy、USD の `pxr` 入り）。mmd_tools は入っていません。
-- bpy なしのテスト：`python3 -m pytest tests/unit`
-- Blender のテスト：`blender --background --factory-startup --python-exit-code 1 --python <テストを動かすスクリプト>`（作ったら、ここに正しい形を書く）
+- Blender 5.2.2 LTS が `blender` で使えます（Python 3.13、numpy、USD の `pxr` 入り）。mmd_tools と pytest は入っていません。
+- テストは標準の `unittest` で書きます（Blender の中の Python にも、そのまま使えるため）。
+- 全部のテスト（Blender の中）。コミットの前に必ず通します：
+  `blender --background --factory-startup --python-exit-code 1 --python tests/run_in_blender.py`
+- bpy なしのテストだけ（速い）：`python3 -m unittest discover -s tests/unit -t .`
+- 拡張機能の zip を作る：`blender --command extension build --source-dir blender_ai_tools --output-dir dist`
+- Mac mini では、`blender` を `/Applications/Blender.app/Contents/MacOS/Blender` に読み替えます。
 - mmd_tools や紅魔館のファイルが要るテストは、無いときは理由を出して飛ばします。飛ばしたテストは合格と数えません。
 
 ### 見本
