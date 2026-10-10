@@ -11,6 +11,13 @@ def mm(value: float) -> float:
     return value / 1000.0
 
 
+# MARK: - 道具の目録（A8）
+
+# LLM の返事（道具の呼び出しの JSON）の長さの上限（文字）。parse_tool_call の max_length の既定（仮）
+MAX_TOOL_CALL_LENGTH = 65536
+# 道具の入力のスキーマの入れ子の深さの上限（いちばん外が 0 段）。深すぎるスキーマで止まらなくならないようにする（仮）
+MAX_SCHEMA_DEPTH = 32
+
 # MARK: - 書き出し（E1・E2）
 
 # 1つの頂点に効く骨の数の上限（convert_blend.py の MAX_BONE_INFLUENCES と同じ。iPhone の RealityKit 向け）
@@ -26,6 +33,8 @@ REPRO_TOLERANCE_ANGLE_DEG = 0.01
 REPRO_TOLERANCE_RATIO = 1e-6
 # 乱数の種を指定しなかったときの種
 DEFAULT_SEED = 0
+# git の答えを待つ時間の上限（秒）。git_state の1回の git ごと。過ぎたら「分からない」（None）にする（仮）
+GIT_TIMEOUT_SECONDS = 10.0
 
 # MARK: - ウェイト（A4・B4）
 
@@ -60,6 +69,10 @@ EDGE_SHRINK_RED = 0.5
 # 体積が減ってよい割合（仮）
 VOLUME_LOSS_YELLOW = 0.10
 VOLUME_LOSS_RED = 0.25
+# 体積の変わり方を測らない、休みの形の体積の小ささ（仮）。
+# |休みの体積| <= この数 × (休みの表面積)^1.5 のとき測らない（灰）。平らな形・裏表が重なった形など。
+# 球なら 体積 / 表面積^1.5 は約 0.094 なので、ふつうの閉じた形は、この数よりずっと大きい
+VOLUME_MIN_RATIO = 1e-6
 # とげの強さ：まわりの辺の長さの平均に対する、とび出しの割合（仮）
 SPIKE_YELLOW = 0.5
 SPIKE_RED = 1.0
@@ -70,6 +83,9 @@ SPIKE_RED = 1.0
 MERGE_DISTANCE = mm(0.1)
 # 面積 0 とみなす面積（平方メートル）（仮）
 DEGENERATE_AREA = 1e-12
+# 小さな離れた部品とみなす三角形の数（これ以下。いちばん大きい部品は除く）（仮）。
+# 目のハイライトの板（三角形2つ）なども入るが、消すのはユーザーの確認のあとなのでよい
+LOOSE_PART_MAX_FACES = 4
 
 # MARK: - 関節と足（A4・M4）
 
@@ -95,3 +111,8 @@ VISIBILITY_RESOLUTION = 512
 VISIBILITY_DEPTH_EPSILON = mm(1.0)
 # アプリのカメラの画角（KICKOFF の「画角70°」。縦か横かは、紅魔館のコードで確かめる）
 APP_CAMERA_FOV_DEG = 70.0
+# 見え方を調べるカメラの、写す奥行きの範囲の手前（Blender の clip_start）。これより近い物は写さない（仮。アプリのカメラに合わせる）。
+# Blender の初めの値は 0.1m だが、顔の近くに置くカメラでも切れないように短くする
+CAMERA_NEAR = mm(10.0)
+# 見え方を調べるカメラの、写す奥行きの範囲の奥（Blender の clip_end。初めの値と同じ 1000m）。これより遠い物は写さない（仮）
+CAMERA_FAR = 1000.0
