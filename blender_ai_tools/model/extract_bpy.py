@@ -13,6 +13,8 @@
 - 骨の並び（番号）は armature.data.bones の並び（親から子へ、深さ優先）。bone_rest・bone_weights・pose_matrices・
   pose_rotations はどれもこの並び。convert_pmx.rename_bones の b000 などの番号も、同じ並びで付く。
 - 回転（クォータニオン）は Blender の順 (w, x, y, z)。q と -q は同じ回転なので、w が負にならない方を返す。
+- mesh_rest は休みの姿勢の形：骨を親にしたメッシュ（parent_type が BONE）も、親の骨が休みの姿勢にあるときの位置に置く。
+  ポーズ・動きで変わる形は mesh_evaluated で読む。
 - 元のデータは書き換えない。フレームを変えたときは、元のフレームとアーマチュアのポーズ（キーの無い変更も）に戻す。
   モード・アクティブなオブジェクト・選択は変えない。
   編集モードの物は、編集中の形を先にデータへ写してから読む（update_from_editmode。モードはそのまま）。
@@ -72,8 +74,12 @@ def _transform_points(matrix: np.ndarray, points: np.ndarray) -> np.ndarray:
     return points @ matrix[:3, :3].T + matrix[:3, 3]
 
 
-def _sync_edit_mode(*objects: Any) -> None:
-    """編集モードの物は、編集中の形をデータに写す（モードは変えない）。写さないと、古い形を読んでしまう"""
+def sync_edit_mode(*objects: Any) -> None:
+    """編集モードの物は、編集中の形をデータに写す（モードは変えない）。写さないと、古い形を読んでしまう。
+
+    ここの読む関数は、どれも先にこれを呼ぶ。ほかの所（E2 など）で obj.data を直に読むときも、先にこれを呼ぶ。
+    None は飛ばす。
+    """
     for obj in objects:
         if obj is not None and obj.mode == "EDIT":
             obj.update_from_editmode()
@@ -220,7 +226,7 @@ class BoneRest:
 def bone_names(armature: Any) -> tuple[str, ...]:
     """骨の名前（armature.data.bones の順）"""
     _check_object(armature, "ARMATURE", "armature")
-    _sync_edit_mode(armature)
+    sync_edit_mode(armature)
     return tuple(bone.name for bone in armature.data.bones)
 
 
@@ -232,7 +238,7 @@ def bone_rest(armature: Any, *, space: str = "world") -> BoneRest:
     """
     _check_object(armature, "ARMATURE", "armature")
     _check_space(space)
-    _sync_edit_mode(armature)
+    sync_edit_mode(armature)
     bones = list(armature.data.bones)
     names = tuple(bone.name for bone in bones)
     lookup = {name: i for i, name in enumerate(names)}
@@ -289,24 +295,56 @@ def _to_space(obj_matrix: np.ndarray, armature_matrix: np.ndarray | None, space:
     return np.linalg.inv(armature_matrix) @ obj_matrix
 
 
+def _bone_parent_rest_matrix(obj: Any, depsgraph: Any) -> np.ndarray | None:
+    """骨を親にしたオブジェクト（parent_type が BONE）の、親の骨が休みの姿勢にあるときの matrix_world (4, 4)。
+
+    Blender の式（object.cc の ob_parbone・solve_parenting）：
+        親の matrix_world @ 骨の行列 @ matrix_parent_inverse @ matrix_basis
+        骨の行列：ふつうは骨の休みの行列（bone.matrix_local）の位置を、骨の Y 軸 × 骨の長さ だけ先へ動かした物
+        （骨の先に付く）。「相対の親子」（use_relative_parent）のときは骨の動きだけ（休みの姿勢では単位行列）。
+    どれもポーズで変わらない値なので、ポーズを付けても同じ数になる。
+    骨を親にしていない・骨が見つからない（Blender も骨を使わない）ものは None（matrix_world はポーズで変わらない）。
+    拘束（コンストレイント）が効いているものも None（拘束の後の位置は、この式では出せない。いまの位置のまま読む）。
+    """
+    parent = obj.parent
+    if parent is None or parent.type != "ARMATURE" or obj.parent_type != "BONE":
+        return None
+    bone = parent.data.bones.get(obj.parent_bone)
+    if bone is None:
+        return None
+    if any(constraint.enabled and constraint.influence > 0.0 for constraint in obj.constraints):
+        return None
+    if bone.use_relative_parent:
+        bone_matrix = np.eye(4)
+    else:
+        bone_matrix = _matrix(bone.matrix_local)
+        bone_matrix[:3, 3] += bone_matrix[:3, 1] * bone.length
+    parent_world = _world_matrix(parent, depsgraph)
+    basis = _matrix(_evaluated(obj, depsgraph).matrix_basis)
+    return parent_world @ bone_matrix @ _matrix(obj.matrix_parent_inverse) @ basis
+
+
 def mesh_rest(obj: Any, *, space: str = "world", armature: Any = None) -> tuple[np.ndarray, np.ndarray]:
-    """モディファイアを通さない、元の形：(頂点 (N, 3) float64, 三角形 (M, 3) int64)。
+    """モディファイアを通さない、休みの姿勢の元の形：(頂点 (N, 3) float64, 三角形 (M, 3) int64)。
 
     頂点は obj.data の座標（シェイプキーがあれば、基本のキーの形。_rest_coordinates）。space が "armature" のときは
     armature の中の座標（armature を渡さなければ armature_of(obj)）。三角形は loop_triangles（面の向きは元の面のまま）。
     位置の行列は、計算した matrix_world（計算に入っていない物は ValueError。モジュールの説明を見る）。
+    ただし、骨を親にしたメッシュ（parent_type が BONE。髪飾りなど）は、親の骨が休みの姿勢にあるときの位置に置く
+    （_bone_parent_rest_matrix）。ポーズを付けても、動きを読み込んでも、同じ数になる（A1 の登録カードの指紋も、これで作る）。
     """
     _check_object(obj, "MESH", "obj")
     _check_space(space)
     if space == "armature":
         armature = _check_object(armature if armature is not None else armature_of(obj), "ARMATURE", "armature")
-    _sync_edit_mode(obj)
+    sync_edit_mode(obj)
     mesh = obj.data
     vertices = _rest_coordinates(mesh)
     depsgraph = bpy.context.evaluated_depsgraph_get()
     arm_matrix = None if space == "world" else _world_matrix(armature, depsgraph)
-    matrix = _to_space(_world_matrix(obj, depsgraph), arm_matrix, space)
-    return _transform_points(matrix, vertices), _triangles(mesh)
+    rest_world = _bone_parent_rest_matrix(obj, depsgraph)
+    obj_matrix = _world_matrix(obj, depsgraph) if rest_world is None else rest_world
+    return _transform_points(_to_space(obj_matrix, arm_matrix, space), vertices), _triangles(mesh)
 
 
 def mesh_evaluated(obj: Any, depsgraph: Any = None, *, space: str = "world", armature: Any = None) -> np.ndarray:
@@ -321,7 +359,7 @@ def mesh_evaluated(obj: Any, depsgraph: Any = None, *, space: str = "world", arm
     _check_space(space)
     if space == "armature":
         armature = _check_object(armature if armature is not None else armature_of(obj), "ARMATURE", "armature")
-    _sync_edit_mode(obj, armature)
+    sync_edit_mode(obj, armature)
     if depsgraph is None:
         depsgraph = bpy.context.evaluated_depsgraph_get()
     evaluated = _evaluated(obj, depsgraph)
@@ -371,7 +409,7 @@ def bone_weights(obj: Any, armature: Any) -> tuple[WeightTable, tuple[str, ...]]
     """
     _check_object(obj, "MESH", "obj")
     names = bone_names(armature)
-    _sync_edit_mode(obj)
+    sync_edit_mode(obj)
     mapping = _group_bone_ids(obj, names)
     group_count = len(mapping)
     rows: list[list[tuple[int, float]]] = []
@@ -432,17 +470,31 @@ def _restore_snapshot(snapshot: list[tuple[Any, str, tuple[float, ...]]]) -> Non
 
 
 @contextmanager
+def pose_kept(armature: Any) -> Iterator[None]:
+    """中で変えた、アーマチュアのオブジェクトと骨の位置・回転・大きさ（キーの無い変更も）を、終わったら元に戻す。
+
+    set_pose・reset_pose で確かめのポーズを付けるとき（E2 など）に使う。回転の形（rotation_mode）・
+    レストポジションの設定・フレームは戻さない（フレームは _frames_restored が戻す）。
+    """
+    _check_object(armature, "ARMATURE", "armature")
+    snapshot = _pose_snapshot(armature)
+    try:
+        yield
+    finally:
+        _restore_snapshot(snapshot)
+        bpy.context.view_layer.update()
+
+
+@contextmanager
 def _frames_restored(armature: Any) -> Iterator[Any]:
     """フレームを動かしたあと、元のフレームと、アーマチュアのポーズ（キーの無い変更も）に戻す"""
     scene = bpy.context.scene
     frame, subframe = scene.frame_current, scene.frame_subframe
-    snapshot = _pose_snapshot(armature)
-    try:
-        yield scene
-    finally:
-        scene.frame_set(frame, subframe=subframe)
-        _restore_snapshot(snapshot)
-        bpy.context.view_layer.update()
+    with pose_kept(armature):
+        try:
+            yield scene
+        finally:
+            scene.frame_set(frame, subframe=subframe)
 
 
 def _read_pose(armature: Any, names: Sequence[str], space: str) -> np.ndarray:

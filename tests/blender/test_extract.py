@@ -277,6 +277,35 @@ class MeshTest(FixtureCase):
         np.testing.assert_allclose(in_armature, local + np.array([0.0, 0.0, 0.1]), atol=1e-6)
         np.testing.assert_allclose(mesh_rest(self.skirt)[0], moved(local + np.array([0.0, 0.0, 0.1])), atol=1e-6)
 
+    def test_rest_of_bone_parented_mesh_ignores_pose(self):
+        """骨を親にしたメッシュ（parent_type BONE。髪飾りなど）は、ポーズを付けても、親の骨が休みの姿勢にあるときの
+        位置で読む（A1 の登録カードの指紋も、この読み方）。休みの姿勢では Blender が計算した位置と同じ"""
+        data = bpy.data.meshes.new("Ribbon")
+        data.from_pydata([(0.0, 0.0, 0.0), (0.05, 0.0, 0.0), (0.0, 0.05, 0.0)], [], [(0, 1, 2)])
+        ribbon = bpy.data.objects.new("Ribbon", data)
+        bpy.context.scene.collection.objects.link(ribbon)
+        ribbon.parent = self.armature
+        ribbon.parent_type = "BONE"
+        ribbon.parent_bone = "左ひじ"
+        ribbon.location = (0.01, 0.02, 0.03)
+        self.move_armature()
+        local = raw_coordinates(data)
+
+        def blender_world():
+            matrix = np.array(ribbon.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world)
+            return local @ matrix[:3, :3].T + matrix[:3, 3]
+
+        at_rest = blender_world()
+        rest = {space: mesh_rest(ribbon, space=space, armature=self.armature)[0] for space in extract_bpy.SPACES}
+        np.testing.assert_allclose(rest["world"], at_rest, atol=1e-6)
+        np.testing.assert_allclose(rest["world"], moved(rest["armature"]), atol=1e-6)
+        set_pose(self.armature, {"左腕": quaternion_about((1.0, 0.0, 0.0), 30.0),
+                                 "左ひじ": quaternion_about((0.0, 0.0, 1.0), 40.0)})
+        self.assertGreater(np.abs(blender_world() - at_rest).max(), 0.05)  # ほんとうに動いた
+        for space in extract_bpy.SPACES:
+            with self.subTest(space=space):
+                np.testing.assert_array_equal(mesh_rest(ribbon, space=space, armature=self.armature)[0], rest[space])
+
     def test_evaluated_equals_rest_at_rest_pose(self):
         self.move_armature()
         for obj in (self.body, self.skirt):
@@ -848,6 +877,36 @@ class SetPoseTest(FixtureCase):
             set_pose(self.armature, [("左腕", good)])
         with self.assertRaises(ValueError):
             set_pose(self.body, {"左腕": good})
+
+    def test_pose_kept_restores_unkeyed_pose(self):
+        """pose_kept：中で付けたポーズ（キーの無い変更）と、アーマチュアのオブジェクトの位置を、元に戻す。例外のときも"""
+        arm = self.armature.pose.bones["左腕"]
+        neck = self.armature.pose.bones["首"]
+        neck.rotation_mode = "XZY"
+        neck.rotation_euler = (0.1, -0.2, 0.3)
+        arm.location = (0.01, 0.0, 0.0)
+        bpy.context.view_layer.update()
+        before = {bone.name: (tuple(bone.location), tuple(bone.rotation_quaternion), tuple(bone.rotation_euler),
+                              tuple(bone.scale)) for bone in self.armature.pose.bones}
+        joints_before = joint_positions(self.armature, ["左手首"])
+        with self.assertRaises(RuntimeError):
+            with extract_bpy.pose_kept(self.armature):
+                reset_pose(self.armature)
+                set_pose(self.armature, {"左腕": quaternion_about((0.0, 1.0, 0.0), 50.0),
+                                         "首": quaternion_about((0.0, 0.0, 1.0), 20.0)})
+                self.armature.location = (0.5, 0.0, 0.0)
+                bpy.context.view_layer.update()
+                self.assertGreater(np.abs(joint_positions(self.armature, ["左手首"]) - joints_before).max(), 0.05)
+                raise RuntimeError("途中で止まった")
+        after = {bone.name: (tuple(bone.location), tuple(bone.rotation_quaternion), tuple(bone.rotation_euler),
+                             tuple(bone.scale)) for bone in self.armature.pose.bones}
+        self.assertEqual(after, before)
+        self.assertEqual(tuple(self.armature.location), (0.0, 0.0, 0.0))
+        self.assertEqual(neck.rotation_mode, "XZY")
+        np.testing.assert_allclose(joint_positions(self.armature, ["左手首"]), joints_before, atol=1e-7)
+        with self.assertRaises(ValueError):
+            with extract_bpy.pose_kept(self.body):
+                pass
 
 
 if __name__ == "__main__":

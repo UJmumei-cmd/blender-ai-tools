@@ -19,9 +19,11 @@ import numpy as np
 
 from blender_ai_tools import catalog, provenance, thresholds
 from blender_ai_tools.catalog import schema
+from blender_ai_tools.export import roundtrip
 from blender_ai_tools.measure import (deformation, geometry, kinematics, mesh_check, symmetry, visibility,
                                       weights)
 from blender_ai_tools.measure.results import Measurement, Signal
+from blender_ai_tools.model import card
 from tests import shapes
 
 PACKAGE_DIR = Path(__file__).resolve().parents[2] / "blender_ai_tools"
@@ -40,6 +42,9 @@ MOVED_THRESHOLDS = [
     (visibility, "CAMERA_FAR"),
     (mesh_check, "LOOSE_PART_MAX_FACES"),
     (deformation, "VOLUME_MIN_RATIO"),
+    (roundtrip, "ORDER_MATCH_MIN_FRACTION"),
+    (roundtrip, "SKELETON_MATRIX_TOLERANCE"),
+    (roundtrip, "POSE_MOVED_TOLERANCE"),
 ]
 
 
@@ -108,6 +113,9 @@ class ThresholdLocationTest(unittest.TestCase):
         self.assertEqual(thresholds.CAMERA_FAR, 1000.0)
         self.assertEqual(thresholds.LOOSE_PART_MAX_FACES, 4)
         self.assertEqual(thresholds.VOLUME_MIN_RATIO, 1e-6)
+        self.assertEqual(thresholds.ORDER_MATCH_MIN_FRACTION, 0.5)
+        self.assertEqual(thresholds.SKELETON_MATRIX_TOLERANCE, 1e-5)
+        self.assertEqual(thresholds.POSE_MOVED_TOLERANCE, 1e-6)
 
     def test_defaults_use_thresholds(self):
         """関数の既定の値が thresholds の数字になっている"""
@@ -354,6 +362,81 @@ class MeasurementConventionsTest(unittest.TestCase):
         for bad in ("Visible", "visible points", "見える", "", "_x", 3, None):
             with self.subTest(name=bad), self.assertRaises(ValueError):
                 visibility.summarize_visible_points(point, renders, mesh=RENDER_MESH, name=bad)
+
+
+# E2 往復の確認（export/roundtrip.py）と A1 登録カード（model/card.py）の結果の名前 → 単位
+ROUNDTRIP_UNITS = {
+    roundtrip.DEVIATION_NAME: "m", roundtrip.COVERAGE_NAME: "count", roundtrip.SKELETON_NAME: "m",
+    roundtrip.JOINT_NAMES_NAME: "count", roundtrip.HUMANOID_NAME: "count", roundtrip.SHAPE_KEYS_NAME: "count",
+    roundtrip.INFLUENCES_NAME: "count", roundtrip.WEIGHT_SUMS_NAME: "ratio", roundtrip.PHYSICS_NAME: "count",
+}
+CARD_UNITS = {
+    card.SEMI_STANDARD_NAME: "count", card.UNKNOWN_BONES_NAME: "count", card.UNCONFIRMED_PARTS_NAME: "count",
+    card.BODY_MEASUREMENTS_NAME: "count", card.SOURCE_TERMS_NAME: "count", card.CARD_CURRENT_NAME: "count",
+}
+
+
+def empty_roundtrip_results() -> list[Measurement]:
+    """E2 の確かめを、骨も形も無い書き出しで1回ずつ呼ぶ（rig の bones も空）"""
+    model = roundtrip.ExportedModel(joint_paths=(), bind=np.zeros((0, 4, 4)), rest_local=None, meshes=())
+    rig = {"version": 1, "bones": {}, "expressions": {}, "originalNames": {"bones": {}, "shapeKeys": {}}}
+    return [
+        roundtrip.check_coverage(model, {}, {}),
+        roundtrip.compare_rest(model, {}, np.zeros((0, 4, 4)), {}),
+        roundtrip.check_skeleton(model),
+        *roundtrip.check_names(rig, model, [], []),
+        *roundtrip.check_influences(model),
+        roundtrip.check_no_physics(model, []),
+    ]
+
+
+class ExportAndCardConventionsTest(unittest.TestCase):
+    """E2・A1 の結果も、A4 と同じ決まり（snake_case の名前・決まった単位・名前が重ならない・調べる物が無ければ灰）"""
+
+    def test_names_are_snake_case_and_distinct(self):
+        groups = {"measure": NAME_CONSTANTS, "roundtrip": set(ROUNDTRIP_UNITS), "card": set(CARD_UNITS)}
+        self.assertEqual(len(ROUNDTRIP_UNITS), 9)
+        self.assertEqual(len(CARD_UNITS), 6)
+        for label, names in groups.items():
+            for name in names:
+                with self.subTest(group=label, name=name):
+                    self.assertRegex(name, SNAKE_CASE)
+        self.assertFalse(NAME_CONSTANTS & set(ROUNDTRIP_UNITS))
+        self.assertFalse(NAME_CONSTANTS & set(CARD_UNITS))
+        self.assertFalse(set(ROUNDTRIP_UNITS) & set(CARD_UNITS))
+        for unit in (*ROUNDTRIP_UNITS.values(), *CARD_UNITS.values()):
+            self.assertIn(unit, UNITS)
+
+    def test_roundtrip_units_and_empty_inputs(self):
+        """E2 の確かめは、骨も形も無いとき「問題 0」の緑にしない（物理の部品と、シェイプキーの名前は除く：
+        無いことを確かめる物と、キーも表情も無いモデルで食い違いが無いことを確かめる物）"""
+        results = empty_roundtrip_results()
+        self.assertEqual({m.name for m in results}, set(ROUNDTRIP_UNITS))
+        for result in results:
+            with self.subTest(name=result.name):
+                self.assertEqual(result.unit, ROUNDTRIP_UNITS[result.name])
+                if result.name in (roundtrip.PHYSICS_NAME, roundtrip.SHAPE_KEYS_NAME):
+                    self.assertEqual(result.signal, Signal.GREEN)
+                    continue
+                self.assertEqual(result.signal, Signal.GRAY)
+                self.assertIsNone(result.value)
+                self.assertRegex(result.reason, JAPANESE)
+
+    def test_card_summary_units(self):
+        bones = card.BoneArrays(names=("センター",), parents=np.array([-1]), heads=np.zeros((1, 3)),
+                                tails=np.array([[0.0, 0.0, 0.1]]), deform=np.array([True]),
+                                matrices=np.eye(4)[None])
+        model_card = card.make_card(blend_name="m.blend", armature_name="Arm", bones=bones, meshes=[],
+                                    created_at="2026-01-01T00:00:00+00:00", tool_version="0", blender_version="5.2.2")
+        results = card.summarize_card(model_card, [])
+        self.assertEqual({m.name for m in results}, set(CARD_UNITS))
+        for result in results:
+            with self.subTest(name=result.name):
+                self.assertEqual(result.unit, CARD_UNITS[result.name])
+        by_name = {m.name: m for m in results}
+        # 部品が無い・測れない値があるときは灰（緑にしない）
+        self.assertEqual(by_name[card.UNCONFIRMED_PARTS_NAME].signal, Signal.GRAY)
+        self.assertEqual(by_name[card.BODY_MEASUREMENTS_NAME].signal, Signal.GRAY)
 
 
 # MARK: - 測れなかった値の扱い（赤でないかぎり灰）

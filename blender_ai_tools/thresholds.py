@@ -29,6 +29,16 @@ MAX_BONE_INFLUENCES = 4
 ROUNDTRIP_MAX_DEVIATION = mm(0.5)
 # 往復の確認で、書き出した点と元の点を「同じ点」とみなす距離（休みの姿勢。float32 の誤差より大きく、0.5mm よりずっと小さい）（仮）
 ROUNDTRIP_MATCH_DISTANCE = mm(0.01)
+# 往復の確認で、書き出した点と元の頂点を並びのまま対応させるとき、ROUNDTRIP_MATCH_DISTANCE の中に入る点がこの割合以上なら、
+# 並びが合っているとみなす（割合。合わなければ、いちばん近い点で対応させる。そちらのほうが多く合うときだけ）（仮）
+ORDER_MATCH_MIN_FRACTION = 0.5
+# 往復の確認で、restTransforms から組み立てた休みの姿勢と bindTransforms の、行列の成分の差の上限（仮）。
+# 骨格の空間の数（メートルではない。回転は約 1e-5 rad、位置は大きさ 1 のアーマチュアで 0.01mm）。
+# これより大きい骨を「合わない骨」として出す（形が動かなければ黄）
+SKELETON_MATRIX_TOLERANCE = 1e-5
+# 往復の確認で、ポーズの骨が「動いた」とみなす、休みの姿勢との行列の成分の差（骨格の空間の数）（仮）。
+# どの骨も動かなければ、ポーズを確かめられなかったので灰にする（IK で戻された など）
+POSE_MOVED_TOLERANCE = 1e-6
 # convert_blend.py を待つ時間の上限（秒）。過ぎたら止めて、失敗として報告する（仮）
 CONVERT_TIMEOUT_SECONDS = 600.0
 
