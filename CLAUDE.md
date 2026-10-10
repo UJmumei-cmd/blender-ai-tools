@@ -38,6 +38,7 @@
 - VRM・Mixamo などの骨は、A3 の辞書で準標準の名前に対応させます。辞書に無い名前だけをユーザーに聞きます。
 - 準標準の骨が足りないモデル：骨を足すのは M2（段階1.5）です。段階1では、足りない骨を登録カードと点検の一覧に出し、その骨が要る確かめは灰にします。
 - 準標準のモデルでは、脚のウェイトが 足D・ひざD・足首D に乗っていることが多いです（足・ひざ・足首は、IK と VMD のための骨です）。ウェイトや骨の数を数えるときは、形を動かす骨（`use_deform`）だけを数えます。
+- **モデルの骨の名前は、MMD の日本語の名前のまま保ちます。** convert_blend.py が使う `convert_pmx.rename_bones` が、日本語の名前で骨を探すためです。mmd_tools で読み込むときは `rename_bones=False` にします（「左腕」→「腕.L」の名前の変更をしない）。
 - 左右は、キャラから見た左右です。MMD の 左／右、Blender の `.L`／`.R`、motions.json の `[左, 右]` は、どれも同じ向きです。
 - 単位：Blender の中はメートル、報告は mm です。
 - 向き：Blender は Z が上、USDZ は Y が上です（convert_blend.py が変えます）。往復で比べるときは、向きをそろえてから比べます。
@@ -62,7 +63,12 @@
   - 骨・シェイプキー・材質・テクスチャの名前を ASCII に変える。元の名前は `character_rig.json` の `originalNames` に入る。
   - テクスチャは、大きさの上限を超える物を縮め、PNG にする。
   - 動きは書き出さない。休みの姿勢のまま出し、腕の下ろしはアプリが行う（`restArmDownDegrees`）。
-- 往復の確認（E2）では、名前を `originalNames` を通して比べます。
+- 往復の確認（E2）では、名前を `originalNames` を通して比べます。`originalNames.bones` は「書き出した名前 → 元の名前」です。
+- convert_pmx.py から分かること（確かめの前提）：
+  - アプリのヒューマノイドの骨は `HUMAN_BONES` で決まる。見つかった最初の骨を使う：`hips` ← センター・グルーブ・下半身、`spine` ← 上半身、`chest` ← 上半身2、`neck` ← 首、`head` ← 頭、`leftEye` ← 左目、`leftShoulder` ← 左肩、`leftUpperArm` ← 左腕、`leftLowerArm` ← 左ひじ、`leftHand` ← 左手首、`leftUpperLeg` ← 左足D・左足、`leftLowerLeg` ← 左ひざD・左ひざ、`leftFoot` ← 左足首D・左足首（右も同じ）。指とつま先は入っていない。
+  - ヒューマノイドの骨は、その名前（`hips` など）に、ほかの骨は `b000` のような番号の名前に変わる。
+  - PMX を読むときの mmd_tools は拡張機能 `bl_ext.blender_org.mmd_tools`、大きさは `MMD_SCALE = 0.08`（MMD の1単位を約 8cm にする）、テクスチャの上限は 2048 ピクセル。
+  - 休みの姿勢の腕の下がり角（`restArmDownDegrees`）は、`leftUpperArm` から `leftLowerArm` への向きで測る。
 - convert_blend.py を直したいときは、紅魔館の側に直しの案を出します。
 
 ### character_rig.json（version 1）
