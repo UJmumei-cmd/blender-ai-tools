@@ -6,7 +6,13 @@
   区切り（. _ 空白 -）、名前の前の「名前空間:」（mixamorig: など）の違いは無視する。
 - Blender（mmd_tools）の左右の書き方（腕.L・足ＩＫ_L・肩P.R・腰キャンセル.L）は、共通の名前から作る。
   左右の字を外した残り（腕・足ＩＫ）が、共通の名前と「ぴったり」同じときだけ対応させる。
-  そのため Leg_Belt・ribbon.L・スカート_L のような名前は、L/R の字があっても対応しない。
+  そのため Leg_Belt・ribbon.L・スカート_L のような名前は、L/R の字があっても共通の名前には対応しない
+  （揺れ物の骨として、知っている骨になる。下）。
+- 揺れ物・飾りの骨（髪・スカート・リボン・尻尾 など）の名前は、data/extras_sway.json の決まりで見分け、
+  知っている骨（known extra）にする（ユーザーに1本ずつ聞かない）。日本語は字の並び、英語は語まるごとで比べる
+  （forearm の中の ear に当てないため。name_tokens()）。
+- 名前を決める順番：1. 共通の名前と aliases（人型の骨）、2. known_extras、3. known_extra_prefixes、
+  4. 揺れ物の決まり、5. 分からない骨（ユーザーに聞く）。人型の骨に対応する名前は、揺れ物の決まりに当たっても人型の骨のまま。
 - 1つの名前に、表によって違う意味があるもの（VRM 0.x と 1.0 の leftThumbProximal、mmd_tools と Mixamo の
   LeftLeg）は、lookup() では決めない（None）。map_bones() が、同じモデルのほかの骨の名前から決める。
   ただし、名前空間が書き方を示す名前（"mixamorig:LeftLeg"・"mixamorig12:LeftLeg"。表の namespaces）は、
@@ -27,6 +33,7 @@ from pathlib import Path
 DATA_DIR = Path(__file__).parent / "data"
 CANONICAL_FILE = "mmd_semi_standard.json"
 ALIAS_FILES = ("aliases_mmd.json", "aliases_vrm.json", "aliases_mixamo.json")
+SWAY_FILE = "extras_sway.json"
 
 SIDES = ("L", "R")
 GROUPS = ("trunk", "eye", "arm", "finger", "leg")
@@ -97,6 +104,33 @@ def _lr_key(name: str) -> str | None:
     return base + side.lower() if base else None
 
 
+def _lr_name(name: str) -> str | None:
+    """Blender（mmd_tools）の左右の書き方の名前（左腕 → "腕.L"、腰キャンセル右 → "腰キャンセル.R"）。
+    _lr_key() が None になる名前は None"""
+    if _lr_key(name) is None:
+        return None
+    side = next(side for side, char in _SIDE_CHARS.items() if char in name)
+    return name.replace(_SIDE_CHARS[side], "") + "." + side
+
+
+# 英語の語：大文字だけの続き（後ろに小文字が来ない所まで。"IKParent" の "IK"）か、大文字1つ＋小文字の続き。
+# 英字（A〜Z・a〜z）でない字（数字・区切り・日本語の字）は、語の区切りになる
+_WORDS = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+")
+
+
+def name_tokens(name: str) -> tuple[str, ...]:
+    """名前を英語の語に分ける（揺れ物の名前を、語まるごとで比べるため）。
+
+    - 全角と半角をそろえ（NFKC）、名前空間（最後の ':' まで）を外す
+    - 区切り（. _ - 空白 など）・数字・日本語の字・大文字の切れ目で分ける
+      （"SkirtBack2" → skirt・back、"J_Sec_Hair1_03" → j・sec・hair、"IKParent" → ik・parent）
+    - 語は英字の小文字にする。数字だけの所は語にしない
+    小文字だけで続けて書いた "forearm" は1語のまま（中の ear を語にしない）。文字列でないときは ValueError
+    """
+    text = unicodedata.normalize("NFKC", _check_name(name)).rsplit(":", 1)[-1]
+    return tuple(word.translate(_ASCII_LOWER) for word in _WORDS.findall(text))
+
+
 # MARK: - 辞書の読み込み
 
 
@@ -132,6 +166,8 @@ class _Dictionary:
     extra_prefixes: tuple[str, ...]  # _loose_form() の形
     namespace_tables: tuple[tuple[str, str], ...]  # (名前空間の比べる形, 表の名前)。例 ("mixamorig", "mixamo")
     chains: tuple[tuple[str, tuple[str, ...]], ...]
+    sway_substrings: tuple[str, ...]  # 揺れ物の日本語の字の並び（NFKC の形。ファイルの順）
+    sway_tokens: frozenset[str]  # 揺れ物の英語の語（小文字）
 
 
 def _read_json(file_name: str) -> dict:
@@ -179,6 +215,44 @@ def _name_list(value: object, source: str, table: str, field_name: str) -> list[
         if not normalize(item):
             raise ValueError(f"{source}: 表 {table} の {field_name} に、比べる形が空になる名前があります：{item!r}")
     return value
+
+
+_TOKEN = re.compile(r"[a-z]+")
+
+
+def _load_sway(data: dict) -> tuple[tuple[str, ...], frozenset[str]]:
+    """揺れ物の名前の決まり（extras_sway.json）を確かめて読む。
+
+    substrings は日本語の字だけ（英字・数字・区切り・空白を含むと、英語の名前に字の並びとして当たってしまう）。
+    tokens は英字の小文字だけの1語（name_tokens() が作る語の形。そうでない語は、どの名前にも当たらない）。
+    どちらも、まちがいがあると、知らない骨を隠したり、決まりが黙って効かなくなったりするので、読み込みのときに止める
+    """
+    substrings = data.get("substrings")
+    if not isinstance(substrings, list) or not all(isinstance(item, str) for item in substrings):
+        raise ValueError(f"{SWAY_FILE}: substrings は、名前（文字列）のリスト [] にしてください")
+    sway_substrings: dict[str, None] = {}
+    for item in substrings:
+        form = unicodedata.normalize("NFKC", item)
+        if not form or any(c.isascii() or c.isspace() for c in form):
+            raise ValueError(f"{SWAY_FILE}: substrings の {item!r} は、日本語の字だけで書いてください"
+                             "（英字・数字・区切り・空白は使えません。英語は tokens に書きます）")
+        sway_substrings.setdefault(form, None)
+    tokens = data.get("tokens")
+    if not isinstance(tokens, list) or not all(isinstance(item, str) for item in tokens):
+        raise ValueError(f"{SWAY_FILE}: tokens は、名前（文字列）のリスト [] にしてください")
+    for item in tokens:
+        if not _TOKEN.fullmatch(item):
+            raise ValueError(f"{SWAY_FILE}: tokens の {item!r} は、英字の小文字（a〜z）だけの1語にしてください"
+                             "（数字・区切り・大文字の切れ目は、名前を語に分けるときの区切りです）")
+    return tuple(sway_substrings), frozenset(tokens)
+
+
+def _sway_hits(name: str, substrings: tuple[str, ...], tokens: frozenset[str]) -> tuple[str, ...]:
+    """name に当たる揺れ物の決まり（日本語の字の並び → 英語の語の順）。当たらなければ空"""
+    base = _base_form(name)
+    found = [text for text in substrings if text in base]
+    found += [word for word in dict.fromkeys(name_tokens(name)) if word in tokens]
+    return tuple(found)
 
 
 def _mirror_of(name: str, side: str) -> str:
@@ -232,6 +306,12 @@ def _dictionary() -> _Dictionary:
     extra_keys: set[str] = set()
     extra_prefixes: list[str] = []
     namespace_tables: list[tuple[str, str]] = []
+    # 人型の骨に対応する名前（字のまま）と、その出所。揺れ物の決まりが当たらないことを確かめるため
+    humanoid_names: list[tuple[str, str]] = []
+    for bone in bones:
+        humanoid_names.append((bone.name, CANONICAL_FILE))
+        if bone.side is not None:
+            humanoid_names.append((_lr_name(bone.name), CANONICAL_FILE))
     table_names = {_TABLE_CANONICAL, _TABLE_CANONICAL_LR}
     for file_name in ALIAS_FILES:
         tables = _read_json(file_name).get("tables")
@@ -246,8 +326,10 @@ def _dictionary() -> _Dictionary:
             derive_lr = spec.get("derive_lr_suffix", False)
             for alias, canonical in spec.get("aliases", {}).items():
                 add(normalize(alias), table, canonical, file_name)
+                humanoid_names.append((alias, f"{file_name} の表 {table}"))
                 if derive_lr and _lr_key(alias):
                     add(_lr_key(alias), table, canonical, file_name)
+                    humanoid_names.append((_lr_name(alias), f"{file_name} の表 {table}"))
             for extra in _name_list(spec.get("known_extras", []), file_name, table, "known_extras"):
                 extra_keys.add(normalize(extra))
                 if derive_lr and _lr_key(extra):
@@ -265,6 +347,15 @@ def _dictionary() -> _Dictionary:
     overlap = sorted(extra_keys & entries.keys())
     if overlap:
         raise ValueError(f"known_extras と aliases の両方にある名前があります：{overlap}")
+
+    # 揺れ物の決まりは、人型の骨の名前のどれにも当たってはいけない。当たる決まりは広すぎて、
+    # 人型の骨らしい分からない名前（LeftForeArmTwist・左腕捩4 など）まで、聞かずに隠してしまう
+    sway_substrings, sway_tokens = _load_sway(_read_json(SWAY_FILE))
+    for name, source in humanoid_names:
+        hits = _sway_hits(name, sway_substrings, sway_tokens)
+        if hits:
+            raise ValueError(f"{SWAY_FILE}: 揺れ物の名前の決まり（{'・'.join(hits)}）が、人型の骨の名前 {name}"
+                             f"（{source}）に当たります。決まりを狭くしてください")
 
     chain_data = canonical_data.get("chains", {})
     chains: list[tuple[str, tuple[str, ...]]] = []
@@ -293,6 +384,8 @@ def _dictionary() -> _Dictionary:
         extra_prefixes=tuple(extra_prefixes),
         namespace_tables=tuple(namespace_tables),
         chains=tuple(chains),
+        sway_substrings=sway_substrings,
+        sway_tokens=sway_tokens,
     )
 
 
@@ -384,9 +477,11 @@ def lookup(name: str) -> str | None:
 
 
 def is_known_extra(name: str) -> bool:
-    """知っている骨だが、共通の骨には対応しない名前か（upperChest・J_Sec_*・HeadTop_End・上半身3 など）。
+    """知っている骨だが、共通の骨には対応しない名前か（upperChest・J_Sec_*・HeadTop_End・上半身3、
+    揺れ物の骨の 髪1・スカート_0_0・Hair_L_01 など）。
 
-    ユーザーに聞かなくてよい名前。共通の名前に対応する名前は False
+    ユーザーに聞かなくてよい名前。共通の名前に対応する名前は False。
+    決める順番：共通の名前と aliases → known_extras → known_extra_prefixes → 揺れ物の決まり（is_sway_name）
     """
     d = _dictionary()
     key = normalize(name)
@@ -395,7 +490,23 @@ def is_known_extra(name: str) -> bool:
     if key in d.extra_keys:
         return True
     loose = _loose_form(name)
-    return any(loose.startswith(prefix) for prefix in d.extra_prefixes)
+    if any(loose.startswith(prefix) for prefix in d.extra_prefixes):
+        return True
+    return bool(_sway_hits(name, d.sway_substrings, d.sway_tokens))
+
+
+def is_sway_name(name: str) -> bool:
+    """揺れ物・飾りの骨の名前か（髪・スカート・リボン・袖・尻尾・耳・羽・胸 など。data/extras_sway.json の決まり）。
+
+    日本語は、名前を NFKC にした形の中の字の並びで比べる（髪1_2・ｽｶｰﾄ_0 → True）。
+    英語は、name_tokens() の語まるごとで比べる（Hair_L_01・SkirtBack2・EarL → True、LeftForeArmTwist・Heart → False）。
+    共通の名前に対応する名前（aliases を含む。表によって意味が違う名前も）は、決まりに当たっても False。
+    True の名前は is_known_extra() も True（ユーザーに聞かない）。文字列でないときは ValueError
+    """
+    d = _dictionary()
+    if normalize(name) in d.entries:
+        return False
+    return bool(_sway_hits(name, d.sway_substrings, d.sway_tokens))
 
 
 def is_ambiguous(name: str) -> bool:
@@ -420,6 +531,8 @@ class BoneMapping:
     ambiguous: 1つに決まらなかった名前 → 候補の共通の名前（入力の順。候補は共通の名前の順）。この名前は unknown にも入る
     shadowed: 共通の名前そのものの名前があったので使わなかった名前 → 共通の名前（入力の順）。
         例：「左腕」と「腕.L」の両方があると、「腕.L」がここに入る
+    sway_extras: known_extras のうち、揺れ物・飾りの骨（is_sway_name）の名前（入力の順）。
+        known_extras にも入っている（入れ物を分けるのではなく、known_extras の中の印）。報告の「揺れ物の骨 N 本」に使う
 
     conflicts に出た骨は、骨はある（どれか決まらない）ので missing に入れない。
     """
@@ -432,6 +545,7 @@ class BoneMapping:
     missing_semi_standard: tuple[str, ...]
     ambiguous: dict[str, tuple[str, ...]] = field(default_factory=dict)
     shadowed: dict[str, str] = field(default_factory=dict)
+    sway_extras: tuple[str, ...] = ()
 
     @property
     def is_semi_standard_compliant(self) -> bool:
@@ -506,11 +620,18 @@ def map_bones(names: Iterable[str]) -> BoneMapping:
     claims: dict[str, list[str]] = {}
     unknown: list[str] = []
     extras: list[str] = []
+    sway: list[str] = []
     ambiguous: dict[str, tuple[str, ...]] = {}
     for name in unique:
         groups = groups_by_name[name]
         if not groups:
-            (extras if is_known_extra(name) else unknown).append(name)
+            # 共通の名前に対応しない名前だけが、知っている骨・揺れ物の骨になれる（人型の骨が先）
+            if is_known_extra(name):
+                extras.append(name)
+                if is_sway_name(name):
+                    sway.append(name)
+            else:
+                unknown.append(name)
             continue
         if len(groups) == 1:
             canonical = next(iter(groups))
@@ -551,4 +672,5 @@ def map_bones(names: Iterable[str]) -> BoneMapping:
         missing_semi_standard=missing_semi,
         ambiguous=ambiguous,
         shadowed=shadowed,
+        sway_extras=tuple(sway),
     )

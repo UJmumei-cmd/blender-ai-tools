@@ -2,10 +2,13 @@
 
 テスト用のモデル（tests/fixtures/mmd_model.py）を空のシーンに作ってから調べる。答えは、モデルを作るときの
 決まった数字（背の高さ 1.45・腕の下がり角 37.5 度・関節の位置）から、手で計算した値。
-ファイルは一時フォルダの中だけに作る。
+ファイルは一時フォルダの中だけに作る。本物の書き出し（convert_blend.py）と比べるテストは、環境変数
+BLENDER_AI_TOOLS_KOUMAKAN_REPO（紅魔館のリポジトリの場所）が無いと、理由を出して飛ばす。
 """
 
+import json
 import math
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,22 +18,37 @@ import numpy as np
 from mathutils import Matrix
 
 from blender_ai_tools import provenance, thresholds
-from blender_ai_tools.model import card_bpy
+from blender_ai_tools.export import convert
+from blender_ai_tools.model import card_bpy, extract_bpy
 from blender_ai_tools.model.card import (
-    ARM_REST_DOWN, HEAD_RATIO, HEIGHT, LEG_LENGTH, SHOULDER_WIDTH, ModelCard, set_part_kind, set_source,
-    summarize_card,
+    ARM_REST_DOWN, EXTRA_ANSWER, HEAD_RATIO, HEIGHT, LEG_LENGTH, SHOULDER_WIDTH, ModelCard, bones_fingerprint,
+    card_text, set_bone_answer, set_material_kind, set_part_kind, set_source, shape_fingerprint, summarize_card,
 )
-from blender_ai_tools.model.card_bpy import TEXT_NAME, build_card, check_card, load_card, save_card
+from blender_ai_tools.model.card_bpy import (
+    TEXT_NAME, CardCheck, build_card, build_card_with_notes, check_card, current_fingerprints, load_card, save_card,
+)
 from blender_ai_tools.model.extract_bpy import bone_rest, set_pose
 from tests.fixtures import mmd_model
 
 BONES_CHANGED = "骨（名前・並び・親子・位置・ねじれ・形を動かすかどうか）が変わりました"
+MOVED_NOTE = "置き場所が変わりました（形はそのまま）"
+RESIZED = "モデルの大きさか傾き（アーマチュアの置き方）が変わりました。背の高さと長さを測り直してください"
+KOUMAKAN_ENV = "BLENDER_AI_TOOLS_KOUMAKAN_REPO"
+UNKNOWN_BONE = "謎の骨"
 
 
 def leg_length():
     """左脚の長さ：|足 − ひざ| + |ひざ − 足首|（モデルを作るときの関節の位置から）"""
     hip, knee, ankle = (np.array(p) for p in (mmd_model.HIP_JOINT, mmd_model.KNEE_JOINT, mmd_model.ANKLE_JOINT))
     return float(np.linalg.norm(knee - hip) + np.linalg.norm(ankle - knee))
+
+
+def converter_angle(armature):
+    """convert_pmx.rest_arm_angle と同じ書き方（mathutils の Vector で引き算）で、左腕 → 左ひじ の下がり角"""
+    bones = armature.data.bones
+    direction = bones["左ひじ"].head_local - bones["左腕"].head_local
+    horizontal = (direction.x ** 2 + direction.y ** 2) ** 0.5
+    return round(float(np.degrees(np.arctan2(-direction.z, horizontal))), 1)
 
 
 class CardCase(unittest.TestCase):
@@ -72,16 +90,52 @@ class CardCase(unittest.TestCase):
         bpy.context.view_layer.update()
         return obj
 
-    def edit_bone(self, name, change):
-        """エディットモードで骨を変えて、オブジェクトモードに戻す"""
+    def edit_bones(self, change):
+        """エディットモードで骨を変えて（change(edit_bones)）、オブジェクトモードに戻す"""
         previous = bpy.context.view_layer.objects.active
         bpy.context.view_layer.objects.active = self.armature
         bpy.ops.object.mode_set(mode="EDIT")
         try:
-            change(self.armature.data.edit_bones[name])
+            change(self.armature.data.edit_bones)
         finally:
             bpy.ops.object.mode_set(mode="OBJECT")
             bpy.context.view_layer.objects.active = previous
+
+    def edit_bone(self, name, change):
+        self.edit_bones(lambda bones: change(bones[name]))
+
+    def add_unknown_bone(self, name=UNKNOWN_BONE, head=(0.0, 0.05, 0.9)):
+        """辞書に無い骨（上半身の子）を足す"""
+        def add(bones):
+            bone = bones.new(name)
+            bone.head = head
+            bone.tail = (head[0], head[1], head[2] + 0.05)
+            bone.parent = bones["上半身"]
+        self.edit_bones(add)
+
+    def move_armature(self, location=(1.0, 2.0, 3.0), rotation=(0.0, 0.0, math.radians(90.0)), scale=(1.0, 1.0, 1.0)):
+        self.armature.location = location
+        self.armature.rotation_mode = "XYZ"
+        self.armature.rotation_euler = rotation
+        self.armature.scale = scale
+        bpy.context.view_layer.update()
+
+    def give_body_hair_material(self):
+        """Body に材質 肌（0）と 髪（1）を付け、頭の部品の面を 髪 にする。体の材質の三角形の高さの範囲を返す"""
+        data = self.body.data
+        data.materials.append(bpy.data.materials.new("肌"))
+        data.materials.append(bpy.data.materials.new("髪"))
+        start, end = self.info["parts"]["Body"]["head"]
+        for polygon in data.polygons:
+            if all(start <= index < end for index in polygon.vertices):
+                polygon.material_index = 1
+        data.update()
+        bpy.context.view_layer.update()
+        heights = []
+        for triangle in data.loop_triangles:
+            if triangle.material_index == 0:
+                heights += [float(np.float32(data.vertices[index].co[2])) for index in triangle.vertices]
+        return min(heights), max(heights)
 
 
 # MARK: - 作る
@@ -91,6 +145,7 @@ class BuildCardTest(CardCase):
     def test_values(self):
         card = build_card()
         self.assertIsInstance(card, ModelCard)
+        self.assertEqual(card.schema_version, 2)
         self.assertEqual(card.armature_name, mmd_model.ARMATURE_NAME)
         self.assertEqual(card.blend_name, "")  # 保存していないファイル
         self.assertEqual(card.tool_version, provenance.addon_version())
@@ -111,6 +166,10 @@ class BuildCardTest(CardCase):
         self.assertEqual(mapping["unknown"], [])
         self.assertEqual(len(mapping["mapping"]), self.info["bone_count"])
         self.assertEqual(card.measurements["missing_joints"], [])
+        # 置き方・骨の位置
+        np.testing.assert_array_equal(card.placement_matrix(), np.array(self.armature.matrix_world))
+        rest = bone_rest(self.armature, space="armature")
+        self.assertEqual(card.skeleton, {"names": list(rest.names), "heads": rest.heads.tolist()})
 
     def test_parts(self):
         card = build_card()
@@ -124,36 +183,67 @@ class BuildCardTest(CardCase):
         self.assertEqual(skirt.vertex_count, self.info["vertex_counts"]["Skirt"])
         self.assertEqual(body.triangle_count, len(self.body.data.loop_triangles))
         self.assertEqual(skirt.triangle_count, len(self.skirt.data.loop_triangles))
+        self.assertEqual((body.material_names, body.materials), ((), ()))
         # 服の種類は、ユーザーが選ぶまで None
         chosen = set_part_kind(card, "Skirt", "cloth", "skirt")
         self.assertEqual(chosen.part("Skirt").cloth_type, "skirt")
         self.assertTrue(chosen.part("Skirt").is_confirmed)
 
-    def test_joints_are_world_positions(self):
+    def test_joints_are_armature_positions(self):
         card = build_card()
         joints = card.measurements["joints"]
+        self.assertEqual(card.measurements["space"], "armature")
         np.testing.assert_allclose(joints["左腕"], mmd_model.SHOULDER_JOINT, atol=1e-6)
         np.testing.assert_allclose(joints["右腕"], (-mmd_model.SHOULDER_JOINT[0], *mmd_model.SHOULDER_JOINT[1:]),
                                    atol=1e-6)
         np.testing.assert_allclose(joints["左ひざ"], mmd_model.KNEE_JOINT, atol=1e-6)
-        rest = bone_rest(self.armature, space="world")
+        rest = bone_rest(self.armature, space="armature")
         for name in ("頭", "左足D", "右足首", "左手首"):
             np.testing.assert_allclose(joints[name], rest.heads[rest.index(name)], atol=0.0, err_msg=name)
 
     def test_moved_armature(self):
-        """アーマチュアを動かす（Z まわりに 90 度・(1, 2, 3) へ）：関節は世界の座標、背の高さ・角度・長さは同じ"""
+        """アーマチュアを動かす（Z まわりに 90 度・(1, 2, 3) へ）：関節・指紋・値は同じ。置き方だけが変わる"""
         before = build_card()
-        self.armature.location = (1.0, 2.0, 3.0)
-        self.armature.rotation_mode = "XYZ"
-        self.armature.rotation_euler = (0.0, 0.0, math.radians(90.0))
-        bpy.context.view_layer.update()
+        self.move_armature()
         card = build_card()
-        x, y, z = mmd_model.SHOULDER_JOINT
-        np.testing.assert_allclose(card.measurements["joints"]["左腕"], (1.0 - y, 2.0 + x, 3.0 + z), atol=1e-6)
-        for name in (HEIGHT, LEG_LENGTH["L"], SHOULDER_WIDTH, HEAD_RATIO):
-            self.assertAlmostEqual(card.value(name), before.value(name), delta=1e-5, msg=name)
+        self.assertEqual(card.measurements["joints"], before.measurements["joints"])
+        self.assertEqual(card.fingerprints, before.fingerprints)
+        for name in (HEIGHT, LEG_LENGTH["L"], SHOULDER_WIDTH, HEAD_RATIO, ARM_REST_DOWN["L"]):
+            self.assertAlmostEqual(card.value(name), before.value(name), delta=1e-6, msg=name)
+        self.assertAlmostEqual(card.measurements["mesh_up_range"]["Body"][0], 0.0, delta=1e-6)
+        np.testing.assert_allclose(card.placement_matrix()[:3, 3], (1.0, 2.0, 3.0), atol=1e-6)
+        np.testing.assert_array_equal(card.placement_matrix(), np.array(self.armature.matrix_world))
+
+    def test_rotated_fbx_style_armature(self):
+        """Y が上の向きで骨とメッシュを持ち、X まわりに 90 度回して立てたアーマチュア（FBX の読み込みに似せる）。
+        背の高さは世界の上向きで測るので同じ。腕の下がり角は、convert_pmx と同じくアーマチュアの中で測る"""
+        before = build_card()
+        to_y_up = Matrix.Rotation(math.radians(-90.0), 4, "X")  # 世界の (x, y, z) → (x, z, -y)
+        for obj in (self.body, self.skirt):
+            obj.data.transform(to_y_up)
+            if obj.data.shape_keys is not None:
+                for key in obj.data.shape_keys.key_blocks:
+                    for point in key.data:
+                        point.co = to_y_up @ point.co
+        self.armature.data.transform(to_y_up)
+        self.move_armature(location=(0.0, 0.0, 0.0), rotation=(math.radians(90.0), 0.0, 0.0))
+        card = build_card()
+        self.assertAlmostEqual(card.value(HEIGHT), before.value(HEIGHT), delta=1e-6)
+        self.assertAlmostEqual(card.value(HEAD_RATIO), before.value(HEAD_RATIO), delta=1e-4)
+        self.assertAlmostEqual(card.value(LEG_LENGTH["L"]), before.value(LEG_LENGTH["L"]), delta=1e-6)
+        self.assertEqual(card.value(ARM_REST_DOWN["L"]), converter_angle(self.armature))
+        self.assertNotEqual(card.value(ARM_REST_DOWN["L"]), mmd_model.ARM_DOWN_DEG)  # 世界の向きで測っていない
+
+    def test_scaled_armature_gives_world_lengths(self):
+        """アーマチュアの大きさを 2 倍にすると、世界の長さも 2 倍。腕の下がり角は変わらない"""
+        before = build_card()
+        self.move_armature(location=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0), scale=(2.0, 2.0, 2.0))
+        card = build_card()
+        for name in (HEIGHT, LEG_LENGTH["L"], SHOULDER_WIDTH):
+            self.assertAlmostEqual(card.value(name), 2.0 * before.value(name), delta=1e-6, msg=name)
+        self.assertAlmostEqual(card.value(HEAD_RATIO), before.value(HEAD_RATIO), delta=1e-6)
         self.assertEqual(card.value(ARM_REST_DOWN["L"]), before.value(ARM_REST_DOWN["L"]))
-        self.assertAlmostEqual(card.measurements["mesh_z_range"]["Body"][0], 3.0, delta=1e-6)
+        self.assertEqual(card.fingerprints, before.fingerprints)
 
     def test_material_guess_and_body_only_height(self):
         self.add_mesh("Mesh.001", 1.0, 1.2, material="髪")
@@ -168,6 +258,42 @@ class BuildCardTest(CardCase):
         # ユーザーが帽子を体にすると、入る
         self.assertAlmostEqual(set_part_kind(card, "Hat", "body").value(HEIGHT), 1.60, delta=1e-6)
 
+    def test_per_material_height_excludes_hair(self):
+        """1つのメッシュに 肌 と 髪 の材質（MMD のモデルに似せる）：髪の三角形を外して背の高さを測る"""
+        low, high = self.give_body_hair_material()
+        self.assertLess(high, 1.45 - 0.05)  # 頭を外すと、ほんとうに低くなる
+        card = build_card()
+        body = card.part("Body")
+        self.assertEqual(body.material_names, ("肌", "髪"))
+        self.assertEqual([(m.name, m.kind) for m in body.materials], [("肌", "body"), ("髪", "hair")])
+        self.assertEqual(card.measurements["excluded_materials"], {"Body": ["髪"]})
+        self.assertAlmostEqual(card.value(HEIGHT), high - low, delta=1e-6)
+        self.assertAlmostEqual(card.measurements["material_up_range"]["Body"]["髪"][1], 1.45, delta=1e-6)
+        # 髪も体にすると、頭のてっぺんまで
+        both = set_material_kind(card, "Body", "髪", "body")
+        self.assertAlmostEqual(both.value(HEIGHT), 1.45, delta=1e-6)
+        # 材質の数え方：部品 2 つ（推測のまま）と、材質 2 つ
+        unconfirmed = {m.name: m for m in summarize_card(card)}["unconfirmed_parts"]
+        self.assertEqual(unconfirmed.value, 4.0)
+
+    def test_empty_material_slot(self):
+        """空の材質の枠と、枠の外の番号の面は「材質の無い三角形」（外さない）"""
+        data = self.body.data
+        data.materials.append(bpy.data.materials.new("肌"))
+        data.materials.append(None)
+        data.materials.append(bpy.data.materials.new("髪"))
+        start, end = self.info["parts"]["Body"]["head"]
+        for polygon in data.polygons:
+            if all(start <= index < end for index in polygon.vertices):
+                polygon.material_index = 2
+        data.polygons[0].material_index = 1
+        data.update()
+        card = build_card()
+        body = card.part("Body")
+        self.assertEqual(body.material_names, ("肌", "髪"))
+        self.assertIn("", card.measurements["material_up_range"]["Body"])
+        self.assertEqual(card.measurements["excluded_materials"], {"Body": ["髪"]})
+
     def test_blend_name(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "model.blend"
@@ -176,10 +302,12 @@ class BuildCardTest(CardCase):
 
     def test_previous_choices_are_kept(self):
         first = set_source(set_part_kind(build_card(), "Skirt", "cloth", "skirt"), origin="自作", terms="自由")
-        second = build_card(previous=first)
+        second, notes = build_card_with_notes(previous=first)
+        self.assertEqual(notes, [])
         self.assertEqual(second.part("Skirt").cloth_type, "skirt")
         self.assertEqual(second.part("Skirt").kind_source, "user")
         self.assertEqual(second.source["terms"], "自由")
+        self.assertEqual(build_card(previous=first), second)
 
     def test_state_is_unchanged(self):
         """読むだけ：フレーム・モード・アクティブ・選択・ポーズを変えない。測るのは休みの姿勢"""
@@ -201,6 +329,8 @@ class BuildCardTest(CardCase):
             self.assertEqual(tuple(self.armature.pose.bones["左腕"].rotation_quaternion), pose_before)
             self.assertEqual(card.value(ARM_REST_DOWN["L"]), mmd_model.ARM_DOWN_DEG)
             self.assertNotIn(TEXT_NAME, bpy.data.texts)  # 作るだけ。置かない
+            check_card()
+            self.assertEqual((bpy.context.scene.frame_current, self.armature.mode), (7, "POSE"))
         finally:
             bpy.ops.object.mode_set(mode="OBJECT")
 
@@ -212,6 +342,42 @@ class BuildCardTest(CardCase):
         bpy.ops.wm.read_homefile(use_empty=True)
         with self.assertRaisesRegex(ValueError, "アーマチュアがありません"):
             build_card()
+
+
+class ArmAngleTest(CardCase):
+    """腕の下がり角は、convert_pmx.rest_arm_angle（アーマチュアの中の head_local・mathutils の float32）と同じ値"""
+
+    def tilt_and_bend(self):
+        """左ひじの根元を少し動かし（37.5 度でない角度にする）、アーマチュアを傾けて置く"""
+        self.edit_bone("左ひじ", lambda bone: setattr(bone, "head", (bone.head[0], bone.head[1] - 0.0123,
+                                                                    bone.head[2] - 0.0171)))
+        self.move_armature(location=(0.4, -0.3, 0.2), rotation=(math.radians(15.0), math.radians(20.0), 0.3))
+
+    def test_equals_converter_formula(self):
+        self.tilt_and_bend()
+        card = build_card()
+        expected = converter_angle(self.armature)
+        self.assertNotEqual(expected, mmd_model.ARM_DOWN_DEG)
+        self.assertEqual(card.value(ARM_REST_DOWN["L"]), expected)
+        # 世界の向きで測ると違う角度になる（傾けて置いたので）
+        world = bone_rest(self.armature, space="world")
+        direction = world.heads[world.index("左ひじ")] - world.heads[world.index("左腕")]
+        world_angle = round(math.degrees(math.atan2(-direction[2], math.hypot(direction[0], direction[1]))), 1)
+        self.assertNotEqual(world_angle, expected)
+
+    def test_equals_converter_output(self):
+        """本物の convert_blend.py の character_rig.json の restArmDownDegrees と同じ"""
+        repo = os.environ.get(KOUMAKAN_ENV)
+        if not repo:
+            self.skipTest(f"環境変数 {KOUMAKAN_ENV}（紅魔館のリポジトリの場所）が無いため")
+        self.tilt_and_bend()
+        card = build_card()
+        with tempfile.TemporaryDirectory() as folder:
+            source = mmd_model.save_model(Path(folder) / "model.blend")
+            result = convert.run_convert(source, Path(folder) / "out", blender=bpy.app.binary_path, repo=repo)
+            self.assertTrue(result.ok, result.problems + [result.stdout, result.stderr])
+        self.assertEqual(card.value(ARM_REST_DOWN["L"]), result.rig["restArmDownDegrees"])
+        self.assertEqual(result.rig["restArmDownDegrees"], converter_angle(self.armature))
 
 
 class BoneParentedMeshTest(CardCase):
@@ -233,9 +399,9 @@ class BoneParentedMeshTest(CardCase):
         rest_world = self.world_vertices(ribbon)
         card = build_card()
         save_card(card)
-        # 休みの姿勢では、Blender が計算した位置と同じ（float32 の誤差の中）
-        np.testing.assert_allclose(card.measurements["mesh_z_range"]["Ribbon"],
-                                   [rest_world[:, 2].min(), rest_world[:, 2].max()], atol=1e-6)
+        # 休みの姿勢では、Blender が計算した位置と同じ（世界の上向きの高さ。アーマチュアの原点の高さ 0.1 を引く）
+        np.testing.assert_allclose(card.measurements["mesh_up_range"]["Ribbon"],
+                                   [rest_world[:, 2].min() - 0.1, rest_world[:, 2].max() - 0.1], atol=1e-6)
         half = math.radians(25.0)
         set_pose(self.armature, {"左腕": (math.cos(half), 0.0, math.sin(half), 0.0),
                                  "左ひじ": (math.cos(half), math.sin(half), 0.0, 0.0)})
@@ -244,7 +410,7 @@ class BoneParentedMeshTest(CardCase):
         pose_before = tuple(self.armature.pose.bones["左ひじ"].rotation_quaternion)
         self.assertEqual(check_card()[1], [])
         posed = build_card()
-        self.assertEqual(posed.measurements["mesh_z_range"], card.measurements["mesh_z_range"])
+        self.assertEqual(posed.measurements["mesh_up_range"], card.measurements["mesh_up_range"])
         self.assertEqual(posed.fingerprints, card.fingerprints)
         self.assertEqual(tuple(self.armature.pose.bones["左ひじ"].rotation_quaternion), pose_before)
         # ポーズを付けたままでも、手で直した物は見つける
@@ -360,9 +526,12 @@ class CheckCardTest(CardCase):
         self.assertEqual(check_card(), (None, ["登録カードがありません。先にモデルを登録してください"]))
 
     def test_unchanged(self):
-        card, reasons = check_card()
+        check = check_card()
+        self.assertIsInstance(check, CardCheck)
+        card, reasons = check
         self.assertEqual(card, self.card)
         self.assertEqual(reasons, [])
+        self.assertEqual((check.card, check.reasons, check.notes), (self.card, [], []))
         signals = {m.name: m for m in summarize_card(card, reasons)}
         self.assertEqual(signals["card_current"].value, 0.0)
 
@@ -456,11 +625,42 @@ class CheckCardTest(CardCase):
         self.armature.data.bones["左腕捩1"].name = "左腕捩X"
         self.assertEqual(check_card()[1], [BONES_CHANGED])
 
-    def test_moved_armature_needs_remeasure(self):
-        """カードの位置は世界の座標なので、モデルを動かしただけでも測り直す"""
-        self.armature.location = (0.0, 0.5, 0.0)
+    def test_moved_armature_gives_only_a_note(self):
+        """モデル全体を動かす・Z まわりに回す：測り直しは要らず、置き場所が変わった知らせだけ"""
+        self.move_armature(location=(0.0, 0.5, 0.0), rotation=(0.0, 0.0, math.radians(90.0)))
+        check = check_card()
+        self.assertEqual(check.reasons, [])
+        self.assertEqual(check.notes, [MOVED_NOTE])
+        self.assertEqual(check.notes, [card_text("card.placement_moved")])
+        name, shapes, bones = current_fingerprints()
+        self.assertEqual((name, shapes, bones),
+                         (self.card.armature_name, self.card.fingerprints["shapes"], self.card.fingerprints["bones"]))
+        # 元の置き場所に戻すと、知らせも消える
+        self.move_armature(location=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0))
+        self.assertEqual(check_card().notes, [])
+
+    def test_vertex_edit_still_needs_remeasure_after_moving(self):
+        self.move_armature(location=(0.3, 0.0, 0.0), rotation=(0.0, 0.0, 0.7))
+        co = self.skirt.data.vertices[5].co
+        self.skirt.data.vertices[5].co = (co[0] + 0.001, co[1], co[2])
+        self.skirt.data.update()
+        check = check_card()
+        self.assertEqual((check.reasons, check.notes), (["Skirt の形が変わりました"], [MOVED_NOTE]))
+
+    def test_tilted_or_scaled_armature_needs_remeasure(self):
+        for label, options in (("tilt", {"rotation": (math.radians(30.0), 0.0, 0.0)}),
+                               ("scale", {"rotation": (0.0, 0.0, 0.0), "scale": (1.1, 1.1, 1.1)})):
+            with self.subTest(change=label):
+                self.move_armature(location=(0.0, 0.0, 0.0), **options)
+                check = check_card()
+                self.assertEqual((check.reasons, check.notes), ([RESIZED], []))
+
+    def test_moved_mesh_is_a_shape_change(self):
+        """メッシュだけをアーマチュアに対して動かすのは、形の変化（アーマチュアの中の位置が変わる）"""
+        self.skirt.location = (0.0, 0.0, 0.01)
         bpy.context.view_layer.update()
-        self.assertEqual(check_card()[1], [BONES_CHANGED, "Body の形が変わりました", "Skirt の形が変わりました"])
+        check = check_card()
+        self.assertEqual((check.reasons, check.notes), (["Skirt の形が変わりました"], []))
 
     def test_meshes_added_removed_and_armature_renamed(self):
         self.add_mesh("Ribbon", 1.3, 1.35)
@@ -484,6 +684,104 @@ class CheckCardTest(CardCase):
         signals = {m.name: m for m in summarize_card(card, reasons)}
         self.assertEqual(signals["card_current"].signal.label, "灰")
         self.assertIn(BONES_CHANGED, signals["card_current"].reason)
+
+
+# MARK: - 骨の答えと、版 1 のカード
+
+
+class BoneAnswerTest(CardCase):
+    def test_answers_survive_re_registration_of_the_same_model(self):
+        self.add_unknown_bone()
+        card = build_card()
+        self.assertEqual(card.bone_mapping["unknown"], [UNKNOWN_BONE])
+        answered = set_bone_answer(card, UNKNOWN_BONE, EXTRA_ANSWER)
+        save_card(answered)
+        again, notes = build_card_with_notes(previous=load_card())
+        self.assertEqual(notes, [])
+        self.assertEqual(again.bone_answers, {UNKNOWN_BONE: EXTRA_ANSWER})
+        self.assertEqual(again.bone_mapping["unknown"], [])
+        self.assertIn(UNKNOWN_BONE, again.bone_mapping["known_extras"])
+
+    def test_answers_are_not_copied_to_another_model(self):
+        self.add_unknown_bone()
+        answered = set_source(set_bone_answer(build_card(), UNKNOWN_BONE, EXTRA_ANSWER), terms="個人利用のみ")
+        note = card_text("card.choices_not_carried", armature=mmd_model.ARMATURE_NAME)
+        # 骨を 1 mm 動かした（骨の指紋が違う）
+        self.edit_bone("左ひじ", lambda bone: setattr(bone, "head", (bone.head[0], bone.head[1], bone.head[2] + 0.001)))
+        other, notes = build_card_with_notes(previous=answered)
+        self.assertEqual(notes, [note])
+        self.assertEqual((other.bone_answers, other.source["terms"]), ({}, ""))
+        self.assertEqual(other.bone_mapping["unknown"], [UNKNOWN_BONE])
+        # アーマチュアの名前が違う
+        self.armature.name = "OtherArmature"
+        other, notes = build_card_with_notes(previous=answered)
+        self.assertEqual(notes, [note])
+        self.assertEqual(other.bone_answers, {})
+
+
+def legacy_text_from_scene(card):
+    """いまのシーンから、版 1 のカード（世界の座標の指紋と位置）の JSON を作る（前の版の card_bpy と同じ読み方）"""
+    model = extract_bpy.find_model()
+    rest = bone_rest(model.armature, space="world")
+    shapes = {}
+    z_range = {}
+    for obj in model.meshes:
+        vertices, triangles = extract_bpy.mesh_rest(obj, space="world")
+        shapes[obj.name] = shape_fingerprint(obj.name, vertices, triangles)
+        z_range[obj.name] = [float(vertices[:, 2].min()), float(vertices[:, 2].max())]
+    data = json.loads(card.to_json())
+    for key in ("placement", "skeleton", "bone_answers"):
+        del data[key]
+    for part in data["parts"]:
+        del part["materials"]
+    data["parts"][0].update(kind="body", kind_source="user")
+    measurements = data["measurements"]
+    data["measurements"] = {
+        "space": "world",
+        "joints": {name: [float(c) for c in rest.heads[rest.index(name)]] for name in measurements["joints"]},
+        "missing_joints": measurements["missing_joints"],
+        "mesh_z_range": z_range,
+        "body_meshes": measurements["body_meshes"],
+        "body_meshes_source": measurements["body_meshes_source"],
+        "values": measurements["values"],
+    }
+    data["fingerprints"] = {"shapes": shapes, "bones": bones_fingerprint(rest.names, rest.parents, rest.heads,
+                                                                         rest.tails, rest.deform, rest.matrices)}
+    data["source"]["terms"] = "個人利用のみ"
+    data["schema_version"] = 1
+    return json.dumps(data, sort_keys=True, ensure_ascii=False, indent=2)
+
+
+class LegacyCardTest(CardCase):
+    def setUp(self):
+        super().setUp()
+        self.move_armature(location=(0.2, 0.0, 0.0), rotation=(0.0, 0.0, 0.5))
+        bpy.data.texts.new(TEXT_NAME).write(legacy_text_from_scene(build_card()))
+
+    def test_check_asks_for_one_remeasure(self):
+        card = load_card()
+        self.assertTrue(card.is_legacy)
+        check = check_card()
+        self.assertEqual(check.card, card)
+        self.assertEqual(check.reasons, [card_text("card.legacy_card", version="1")])
+        self.assertEqual(check.notes, [])
+
+    def test_re_registration_carries_choices_of_the_same_model(self):
+        fresh, notes = build_card_with_notes(previous=load_card())
+        self.assertEqual(notes, [])
+        self.assertFalse(fresh.is_legacy)
+        self.assertEqual((fresh.part("Body").kind, fresh.part("Body").kind_source), ("body", "user"))
+        self.assertEqual(fresh.source["terms"], "個人利用のみ")
+        save_card(fresh)
+        self.assertEqual(check_card(), (fresh, []))
+
+    def test_moved_model_cannot_be_matched_to_a_legacy_card(self):
+        """版 1 の指紋は世界の座標なので、動かした後は同じモデルか確かめられない：写さずに知らせる"""
+        self.move_armature(location=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0))
+        fresh, notes = build_card_with_notes(previous=load_card())
+        self.assertEqual(notes, [card_text("card.choices_not_carried", armature=mmd_model.ARMATURE_NAME)])
+        self.assertEqual(fresh.source["terms"], "")
+        self.assertEqual(fresh.part("Body").kind_source, "guess")
 
 
 if __name__ == "__main__":

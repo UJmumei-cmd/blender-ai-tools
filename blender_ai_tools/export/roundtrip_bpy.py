@@ -10,8 +10,10 @@ run_roundtrip の流れ：
    （roundtrip.match_meshes）。抜け・余り（check_coverage）と、休みの姿勢のずれ（compare_rest）を測る。
 4. 確かめのポーズ（roundtrip.TEST_POSES）を1つずつ付け、Blender の形と、書き出した形を同じ骨の行列で動かした点を
    比べる（compare_pose）。骨の行列は、書き出した骨の名前 → originalNames.bones → 元の骨の pose_bone.matrix。
-5. 骨格の休みの姿勢（check_skeleton）・名前（check_names）・骨の数と重み（check_influences）・物理の部品
-   （check_no_physics）を調べる。
+5. 骨格の休みの姿勢（check_skeleton）・名前（check_names）・骨の数と重み（check_influences）を調べる。
+6. 1点4本までにした影響（check_influence_limit）：Blender のウェイト（extract_bpy.bone_weights）で、形を動かす骨
+   （BoneRest.deform）が4本を超える頂点を数え、3・4 で測ったずれのうち、その頂点のずれを見る。少しでも変われば黄。
+7. 物理の部品（check_no_physics）を調べる。
 
 Blender の形は、書き出しと同じ設定で計算する：
 - 書き出し（convert_blend.py と Blender の USD の書き出し）は、描画（レンダー）の設定を使う。そこで計算の間だけ、
@@ -35,13 +37,14 @@ import bpy
 import numpy as np
 
 from ..measure.results import Measurement
+from ..measure.weights import WeightTable
 from ..model import extract_bpy
 from . import roundtrip
 from .roundtrip import DEVIATION_NAME, REST_POSE, TEST_POSES
 from .usd_read_bpy import read_usdz
 
 __all__ = ["REST_POSE", "TEST_POSES", "mask_hidden_vertices", "physics_object_names", "pose_label", "run_roundtrip",
-           "source_shape_keys"]
+           "source_shape_keys", "source_weights"]
 
 # mmd_tools の部品の種類（Object.mmd_type）のうち、ふつうの物
 _PLAIN_MMD_TYPES = ("", "NONE")
@@ -93,6 +96,27 @@ def physics_object_names(scene: Any = None) -> tuple[str, ...]:
                 or mmd_type not in _PLAIN_MMD_TYPES):
             names.append(obj.name)
     return tuple(names)
+
+
+def source_weights(meshes: Sequence[Any], armature: Any) -> tuple[dict[str, WeightTable], dict[str, str]]:
+    """メッシュごとの Blender のウェイト（extract_bpy.bone_weights。骨の番号は armature.data.bones の順）。
+
+    返す物：(メッシュの名前 → WeightTable, 読めなかったメッシュの名前 → 理由)。頂点グループを読むだけで、何も変えない。
+    """
+    names = extract_bpy.bone_names(armature)
+    tables: dict[str, WeightTable] = {}
+    failed: dict[str, str] = {}
+    for obj in meshes:
+        try:
+            table, bones = extract_bpy.bone_weights(obj, armature)
+        except ValueError as error:
+            failed[obj.name] = str(error)
+            continue
+        if bones != names:
+            failed[obj.name] = "ウェイトの骨の並びが、アーマチュアの骨の並びと違います"
+            continue
+        tables[obj.name] = table
+    return tables, failed
 
 
 def source_shape_keys(meshes: Sequence[Any]) -> tuple[str, ...]:
@@ -188,7 +212,8 @@ def run_roundtrip(usdz_path: str | os.PathLike[str], rig_json: Any, *, scene: An
     返す物（この順）：
         "roundtrip_coverage"、"roundtrip_deviation"（休みの姿勢。details["pose"] = "rest"）、
         "roundtrip_deviation"（ポーズごと。details["pose"] はポーズの名前）、"skeleton_rest_consistency"、
-        "joint_names"・"humanoid_bones"・"shape_key_names"、"max_bone_influences"・"joint_weight_sums"、"physics_parts"
+        "joint_names"・"humanoid_bones"・"shape_key_names"、"max_bone_influences"・"joint_weight_sums"、
+        "influence_limit_effect"（1点4本までにした影響。少しでも形が変われば黄）、"physics_parts"
     poses：確かめのポーズ（None なら roundtrip.TEST_POSES）。scene：None か、いまのシーン（ほかのシーンは ValueError）。
     ファイルが読めない・モデルが見つからないときは、灰の "roundtrip_deviation" 1つだけを返す。
     ポーズ・形・レストポジションの設定・表示は、終わったら元に戻す。
@@ -217,6 +242,7 @@ def run_roundtrip(usdz_path: str | os.PathLike[str], rig_json: Any, *, scene: An
     rest_joints = roundtrip.posed_joint_matrices(exported.joint_names, original_bones, rest.names, rest.matrices)
     hidden = {obj.name: mask_hidden_vertices(obj) for obj in meshes}
     counts = {obj.name: len(obj.data.vertices) for obj in meshes}
+    weights, unreadable = source_weights(meshes, armature)
 
     results: list[Measurement] = []
     with _evaluation_state(armature, meshes):
@@ -250,6 +276,9 @@ def run_roundtrip(usdz_path: str | os.PathLike[str], rig_json: Any, *, scene: An
     results.extend(roundtrip.check_names(rig, exported, rest.names, source_shape_keys(meshes),
                                          source_deform_bones=deform))
     results.extend(roundtrip.check_influences(exported))
+    deviations = [m for m in results if m.name == DEVIATION_NAME]
+    results.append(roundtrip.check_influence_limit(deviations, weights, deform=rest.deform, expected_missing=hidden,
+                                                   unmeasured=unreadable))
     results.append(roundtrip.check_no_physics(exported, physics_object_names(scene)))
     return results
 

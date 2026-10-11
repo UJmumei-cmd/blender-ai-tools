@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import random
+import re
 import shutil
 import tempfile
 import unicodedata
@@ -13,7 +14,7 @@ from unittest import mock
 from blender_ai_tools import bones
 from blender_ai_tools.bones import (
     BoneMapping, CanonicalBone, canonical_bone, canonical_bones, canonical_names, chains, is_ambiguous,
-    is_known_extra, lookup, lookup_candidates, map_bones, mirror_name, normalize,
+    is_known_extra, is_sway_name, lookup, lookup_candidates, map_bones, mirror_name, name_tokens, normalize,
 )
 
 # MARK: - 正の一覧（作業の指示の字のまま。全角は \u で書いて、字の幅をはっきりさせる）
@@ -541,20 +542,238 @@ class NegativeExamplesTest(unittest.TestCase):
     """人型の骨でない名前を、対応させない（正規化しすぎない）"""
 
     def test_unknown(self):
-        for name in ("スカート_L", "髪1", "LeftEarring", "RightEarring", "ribbon.L", "Ribbon", "足飾り.L", "Leg_Belt",
-                     "Leg", "Rib.R", "LegBelt.L", "Root", "Armature", "左腕飾り", "左腕.001", "腕捩", "親指０",
-                     "LeftLegBelt", "upper_body_ribbon", "skirt_L", "hair_L", "Bust_L", ""):
+        for name in ("LeftEarring", "RightEarring", "Leg", "Rib.R", "Root", "Armature", "左腕.001", "腕捩", "親指０", ""):
             with self.subTest(name=name):
                 self.assertIsNone(lookup(name))
                 self.assertEqual(lookup_candidates(name), ())
                 self.assertFalse(is_known_extra(name))
+                self.assertFalse(is_sway_name(name))
+
+    def test_sway_names_do_not_map_but_are_known(self):
+        """揺れ物の骨の名前は、L/R の字や 腕・足 の字があっても共通の名前に対応しない。揺れ物の骨として知っている骨になる"""
+        for name in ("スカート_L", "髪1", "ribbon.L", "Ribbon", "足飾り.L", "Leg_Belt", "LegBelt.L", "左腕飾り",
+                     "LeftLegBelt", "upper_body_ribbon", "skirt_L", "hair_L", "Bust_L", "左ひじ飾り"):
+            with self.subTest(name=name):
+                self.assertIsNone(lookup(name))
+                self.assertEqual(lookup_candidates(name), ())
+                self.assertTrue(is_known_extra(name))
+                self.assertTrue(is_sway_name(name))
 
     def test_bust_is_known_extra_not_canonical(self):
         self.assertTrue(is_known_extra("J_Sec_L_Bust1"))
         self.assertIsNone(lookup("J_Sec_L_Bust1"))
         mapping = map_bones(["J_Sec_L_Bust1"])
         self.assertEqual(mapping.known_extras, ("J_Sec_L_Bust1",))
+        self.assertEqual(mapping.sway_extras, ("J_Sec_L_Bust1",))
         self.assertEqual(mapping.mapping, {})
+
+
+# MARK: - 揺れ物・飾りの骨（髪・スカート・リボン など）
+
+# 作業の指示で決めた一覧（ユーザーの承認）。data/extras_sway.json と同じでなければならない
+SPEC_SUBSTRINGS = ("髪", "毛", "前髪", "後髪", "横髪", "もみあげ", "スカート", "裾", "リボン", "袖", "ネクタイ", "マフラー",
+                   "尻尾", "しっぽ", "耳", "羽", "翼", "帽子", "紐", "ひも", "フリル", "胸", "ケープ", "マント", "エプロン",
+                   "ベルト", "飾り", "アクセ", "ポニテ", "ツイン", "揺れ", "物理")
+SPEC_TOKENS = ("hair", "bang", "bangs", "ponytail", "skirt", "ribbon", "sleeve", "tie", "necktie", "scarf", "tail",
+               "ear", "ears", "wing", "wings", "hat", "cap", "string", "frill", "bust", "breast", "cape", "cloak", "coat",
+               "apron", "belt", "accessory", "acc", "chain", "sway", "physics", "phys")
+
+SWAY_NAMES = (
+    # 作業の指示の例
+    "髪1_2", "スカート_前_0_1", "Hair_L_01", "SkirtBack2", "J_Sec_Hair1_03", "ribbon.L", "Tail_03", "EarL",
+    # 日本語（字の並び）
+    "前髪1", "後髪_2", "後ろ髪1_1", "横髪.L", "アホ毛", "もみあげ毛_L", "もみあげ.R", "スカート_0_0", "前スカート", "裾_後",
+    "リボン1", "左袖", "袖.R", "ネクタイ", "マフラー2", "尻尾1", "しっぽ_3", "左耳", "耳.R", "羽_L_1", "翼2", "帽子", "紐_1",
+    "ひも.L", "フリル3", "左胸", "胸上", "ケープ", "マント1", "エプロン", "ベルト_前", "首飾り", "アクセ1", "ポニテ1",
+    "ツインテ_L", "揺れ_1", "物理_00",
+    # 全角・半角（NFKC にしてから比べる）
+    "ｽｶｰﾄ_0", "ﾘﾎﾞﾝ.L", "髪１", "ＨａｉｒＬ", "ＳＫＩＲＴ＿０",
+    # 英語（語まるごと）
+    "BackHair2", "Bang_01", "Bangs", "Ponytail_1", "PonyTail2", "Skirt_F", "Sleeve_R", "Tie", "NeckTie", "Necktie",
+    "Scarf_1", "Ears", "Wing_L", "Wings", "Hat", "Cap_1", "String_2", "Frill01", "Bust_L", "BreastR", "Cape", "Cloak_2",
+    "CoatBack", "Apron", "Belt_F", "Accessory1", "Acc_02", "Chain3", "SwayBone", "PhysicsBone1", "Phys_L", "HAIR_01",
+    "hair.001",
+    # 名前空間は外して比べる
+    "mixamorig:Hair1", "Character:Skirt_B",
+)
+
+# 人型の骨らしい分からない名前：揺れ物の決まりで隠さない（ユーザーに聞く）
+HUMANOID_LIKE_UNKNOWN = ("LeftForeArmTwist", "LeftForeArmRoll", "ForeArm_L", "forearm", "UpperArmTwist_L", "Spine3",
+                         "Spine4", "Chest2", "Neck2", "左腕捩4", "左腕捻4", "左手捩4")
+# 字の並びとしては揺れ物の英語を含むが、語としては含まない名前（ear・tail・cap・hat・acc・hair）
+LOOKALIKE_UNKNOWN = ("Heart", "Spear", "Bearing", "Earring_L", "LeftEarring", "Detail_01", "Retail", "Capsule_L",
+                     "Chat_1", "Accent_1", "Chair_L")
+
+
+class SwayDataTest(unittest.TestCase):
+    def test_data_file_is_the_approved_list(self):
+        data = json.loads((bones.DATA_DIR / bones.SWAY_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(tuple(data["substrings"]), SPEC_SUBSTRINGS)
+        self.assertEqual(tuple(data["tokens"]), SPEC_TOKENS)
+        self.assertTrue(data["_notes"] and data["_sources"])
+        self.assertTrue(any("forearm" in note for note in data["_notes"]))  # 語まるごとで比べる理由
+
+    def test_every_listed_pattern_is_used(self):
+        """一覧のどの決まりも、それだけで揺れ物の名前を見分ける（書いても効かない決まりが無い）"""
+        for text in SPEC_SUBSTRINGS:
+            for name in (text, f"{text}1", f"左{text}_0_1", f"{text}.R"):
+                with self.subTest(name=name):
+                    self.assertTrue(is_sway_name(name))
+                    self.assertTrue(is_known_extra(name))
+                    self.assertIsNone(lookup(name))
+        for word in SPEC_TOKENS:
+            for name in (word, word.capitalize() + "_L", "Left" + word.capitalize() + "2", word.upper() + "_01",
+                         f"x_{word}.R", "J_Sec_" + word.capitalize() + "1"):
+                with self.subTest(name=name):
+                    self.assertTrue(is_sway_name(name))
+                    self.assertTrue(is_known_extra(name))
+                    self.assertIsNone(lookup(name))
+
+    def test_tokens_match_only_whole_words(self):
+        """英語の語は、ほかの語の一部としては当たらない（小文字で続けた forehair・hairx は1語）"""
+        for word in SPEC_TOKENS:
+            for name in ("fore" + word, word + "x", "Fore" + word, word.capitalize() + "x_L"):
+                with self.subTest(name=name):
+                    self.assertFalse(is_sway_name(name))
+                    self.assertFalse(is_known_extra(name))
+
+
+class SwayNameTest(unittest.TestCase):
+    def test_positive_table(self):
+        for name in SWAY_NAMES:
+            with self.subTest(name=name):
+                self.assertTrue(is_sway_name(name))
+                self.assertTrue(is_known_extra(name))
+                self.assertIsNone(lookup(name))
+                self.assertEqual(lookup_candidates(name), ())
+                self.assertFalse(is_ambiguous(name))
+
+    def test_positive_table_in_map_bones(self):
+        names = list(SWAY_NAMES)
+        result = map_bones(names)
+        check_partition(self, names, result)
+        self.assertEqual((result.mapping, result.unknown, result.conflicts), ({}, (), {}))
+        self.assertEqual(result.known_extras, SWAY_NAMES)
+        self.assertEqual(result.sway_extras, SWAY_NAMES)
+
+    def test_every_canonical_name_and_alias_still_maps(self):
+        """人型の骨の名前（共通の名前・左右の書き方・aliases）は、揺れ物の決まりで隠れない"""
+        for bone in canonical_bones():
+            forms = [bone.name] + ([] if bone.side is None else [lr_form(bone.name), lr_form(bone.name, "_")])
+            for form in forms:
+                with self.subTest(name=form):
+                    self.assertEqual(lookup(form), bone.name)
+                    self.assertFalse(is_sway_name(form))
+                    self.assertFalse(is_known_extra(form))
+        for file_name, table, alias, canonical in all_aliases():
+            with self.subTest(file=file_name, table=table, alias=alias):
+                self.assertIn(canonical, lookup_candidates(alias))
+                self.assertFalse(is_sway_name(alias))
+                self.assertFalse(is_known_extra(alias))
+
+    def test_named_humanoid_examples_map_first(self):
+        expected = {"左肩": "左肩", "LeftForeArm": "左ひじ", "RightUpLeg": "右足", "upper body": "上半身",
+                    "上半身2": "上半身2", "首": "首", "頭": "頭", "左腕捻3": "左腕捩3"}
+        for name, canonical in {**expected, "mixamorig:LeftForeArm": "左ひじ", "J_Bip_L_LowerArm": "左ひじ"}.items():
+            with self.subTest(name=name):
+                self.assertEqual(lookup(name), canonical)
+                self.assertFalse(is_sway_name(name))
+                self.assertFalse(is_known_extra(name))
+        result = map_bones(list(expected))
+        self.assertEqual(result.mapping, expected)
+        self.assertEqual((result.known_extras, result.sway_extras, result.unknown), ((), (), ()))
+        # 耳は共通の名前に無いので、揺れ物の骨でよい
+        self.assertIsNone(lookup("左耳"))
+        self.assertTrue(is_sway_name("左耳"))
+
+    def test_mapping_wins_over_a_matching_pattern(self):
+        """比べる形が人型の骨の名前と同じなら、名前の中に揺れ物の語（ear）があっても人型の骨（順番の1が先）"""
+        self.assertIn("ear", name_tokens("LeftFor_Ear_m"))
+        self.assertEqual(normalize("LeftFor_Ear_m"), normalize("LeftForeArm"))
+        self.assertEqual(lookup("LeftFor_Ear_m"), "左ひじ")
+        self.assertFalse(is_sway_name("LeftFor_Ear_m"))
+        self.assertFalse(is_known_extra("LeftFor_Ear_m"))
+        result = map_bones(["LeftFor_Ear_m"])
+        self.assertEqual(result.mapping, {"LeftFor_Ear_m": "左ひじ"})
+        self.assertEqual((result.known_extras, result.sway_extras), ((), ()))
+        # 表によって意味が違う名前も、揺れ物にはしない（ユーザーに聞く）
+        self.assertFalse(is_sway_name("LeftLeg"))
+        self.assertEqual(map_bones(["LeftLeg"]).ambiguous, {"LeftLeg": ("左足", "左ひざ")})
+
+    def test_humanoid_like_unknowns_stay_unknown(self):
+        for name in HUMANOID_LIKE_UNKNOWN + LOOKALIKE_UNKNOWN:
+            with self.subTest(name=name):
+                self.assertIsNone(lookup(name))
+                self.assertFalse(is_sway_name(name))
+                self.assertFalse(is_known_extra(name))
+        names = list(HUMANOID_LIKE_UNKNOWN + LOOKALIKE_UNKNOWN)
+        result = map_bones(names)
+        self.assertEqual(result.unknown, tuple(names))
+        self.assertEqual((result.known_extras, result.sway_extras, result.mapping), ((), (), {}))
+
+    def test_other_known_extras_are_not_sway(self):
+        """揺れ物でない知っている骨（指先・UpperChest・mmd_tools の _dummy_ など）は、sway_extras に入らない"""
+        for name in ("upperChest", "jaw", "上半身3", "頭先", "操作中心", "左親指先", "HeadTop_End", "Spine2",
+                     "J_Bip_C_UpperChest", "J_Adj_C_Tongue1", "J_Adj_L_FaceEyeSet", "_dummy_左足D", "_shadow_腰キャンセル左"):
+            with self.subTest(name=name):
+                self.assertTrue(is_known_extra(name))
+                self.assertFalse(is_sway_name(name))
+        swaying = [extra for _, _, extra in all_known_extras() if is_sway_name(extra)]
+        self.assertEqual(swaying, [])
+        # 前置きで知っている骨でも、揺れ物の決まりに当たれば揺れ物の骨
+        for name in ("J_Sec_Hair1_03", "J_Sec_L_Bust1", "_shadow_髪1"):
+            with self.subTest(name=name):
+                self.assertTrue(is_known_extra(name))
+                self.assertTrue(is_sway_name(name))
+
+    def test_bad_types(self):
+        for bad in (None, 1, b"hair", ["髪1"]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    is_sway_name(bad)
+                with self.assertRaises(ValueError):
+                    name_tokens(bad)
+
+    def test_deterministic(self):
+        names = list(SWAY_NAMES + HUMANOID_LIKE_UNKNOWN + LOOKALIKE_UNKNOWN) + list(canonical_names())
+        flags = [is_sway_name(name) for name in names]
+        self.assertEqual(flags, [is_sway_name(name) for name in names])
+        first = map_bones(names)
+        self.assertEqual(map_bones(names), first)
+        bones._dictionary.cache_clear()  # 辞書を読み直しても同じ
+        self.assertEqual([is_sway_name(name) for name in names], flags)
+        self.assertEqual(map_bones(names), first)
+        reversed_result = map_bones(list(reversed(names)))
+        self.assertEqual(reversed_result.sway_extras, tuple(reversed(first.sway_extras)))
+        self.assertEqual(reversed_result.unknown, tuple(reversed(first.unknown)))
+
+
+class NameTokensTest(unittest.TestCase):
+    def test_examples(self):
+        expected = {
+            "SkirtBack2": ("skirt", "back"),
+            "J_Sec_Hair1_03": ("j", "sec", "hair"),
+            "LeftForeArmTwist": ("left", "fore", "arm", "twist"),
+            "EarL": ("ear", "l"),
+            "IKParent": ("ik", "parent"),
+            "HAIR_01_L": ("hair", "l"),
+            "hairBack3Tail": ("hair", "back", "tail"),
+            "Hair1Ribbon": ("hair", "ribbon"),
+            "PonyTail2": ("pony", "tail"),
+            "forearm": ("forearm",),
+            "LEFTFOREARM": ("leftforearm",),
+            "ＨａｉｒＬ": ("hair", "l"),  # 全角
+            "mixamorig:LeftEar": ("left", "ear"),  # 名前空間を外す
+            "Leg-IK.l": ("leg", "ik", "l"),
+            "ribbon.L": ("ribbon", "l"),
+            "Tail_03": ("tail",),
+            "スカートFront_0": ("front",),  # 日本語の字は区切り
+            "髪1_2": (),
+            "": (),
+        }
+        for name, tokens in expected.items():
+            with self.subTest(name=name):
+                self.assertEqual(name_tokens(name), tokens)
 
 
 # MARK: - モデルの骨の名前をまとめて対応させる
@@ -593,6 +812,9 @@ def check_partition(test: unittest.TestCase, names, result: BoneMapping) -> None
     test.assertEqual(total, len(set(names)))
     test.assertEqual(set().union(*buckets), set(names))
     test.assertTrue(set(result.ambiguous) <= set(result.unknown))
+    # 揺れ物の骨は known_extras の中の印（入れ物は増えない）。並びは known_extras と同じ（入力の順）
+    test.assertEqual(result.sway_extras, tuple(n for n in result.known_extras if n in set(result.sway_extras)))
+    test.assertEqual(result.sway_extras, tuple(n for n in result.known_extras if is_sway_name(n)))
 
 
 class MapBonesTest(unittest.TestCase):
@@ -601,17 +823,18 @@ class MapBonesTest(unittest.TestCase):
         result = map_bones(names)
         self.assertEqual(result.mapping, {n: n for n in names})
         self.assertEqual(list(result.mapping), names)  # 入力の順
-        self.assertEqual((result.unknown, result.known_extras, result.conflicts, result.shadowed, result.ambiguous),
-                         ((), (), {}, {}, {}))
+        self.assertEqual((result.unknown, result.known_extras, result.conflicts, result.shadowed, result.ambiguous,
+                          result.sway_extras), ((), (), {}, {}, {}, ()))
         self.assertEqual((result.missing_standard, result.missing_semi_standard), ((), ()))
         self.assertTrue(result.is_semi_standard_compliant)
 
     def test_compliant_with_extras_and_without_helpers(self):
-        names = [b.name for b in canonical_bones() if not b.helper] + ["髪1", "スカート_L", "操作中心", "左親指先"]
+        names = [b.name for b in canonical_bones() if not b.helper] + ["髪1", "Root", "スカート_L", "操作中心", "左親指先"]
         result = map_bones(names)
         self.assertTrue(result.is_semi_standard_compliant)
-        self.assertEqual(result.unknown, ("髪1", "スカート_L"))
-        self.assertEqual(result.known_extras, ("操作中心", "左親指先"))
+        self.assertEqual(result.unknown, ("Root",))
+        self.assertEqual(result.known_extras, ("髪1", "スカート_L", "操作中心", "左親指先"))
+        self.assertEqual(result.sway_extras, ("髪1", "スカート_L"))
         check_partition(self, names, result)
 
     def test_missing_one_semi_or_standard_bone(self):
@@ -661,6 +884,9 @@ class MapBonesTest(unittest.TestCase):
         self.assertEqual(set(result.known_extras), {"J_Bip_C_UpperChest", "J_Sec_L_Bust1", "J_Sec_L_Bust2",
                                                     "J_Sec_R_Bust1", "J_Sec_R_Bust2", "J_Sec_Hair1_01",
                                                     "J_Sec_Hair2_01"})
+        # 前置き J_Sec_ で知っている骨のうち、胸（bust）と髪（hair）は揺れ物の骨。UpperChest は揺れ物ではない
+        self.assertEqual(result.sway_extras, ("J_Sec_L_Bust1", "J_Sec_L_Bust2", "J_Sec_R_Bust1", "J_Sec_R_Bust2",
+                                              "J_Sec_Hair1_01", "J_Sec_Hair2_01"))
         self.assertEqual(result.mapping["J_Bip_C_Hips"], "センター")
         self.assertEqual(result.mapping["J_Bip_L_Thumb1"], "左親指０")
         self.assertEqual(result.mapping["J_Bip_R_Little3"], "右小指３")
@@ -731,12 +957,13 @@ class MapBonesTest(unittest.TestCase):
         """mmd_tools で読み込んだ準標準のモデル（rename_bones=False）：_dummy_・_shadow_ の骨は聞かない"""
         shadow = ["_dummy_腰キャンセル左", "_shadow_腰キャンセル左", "_dummy_腰キャンセル右", "_shadow_腰キャンセル右",
                   "_dummy_左足D", "_shadow_左足D"]
-        names = list(canonical_names()) + shadow + ["髪1"]
+        names = list(canonical_names()) + shadow + ["髪1", "Root"]
         result = map_bones(names)
         check_partition(self, names, result)
         self.assertEqual(result.mapping, {n: n for n in canonical_names()})
-        self.assertEqual(result.known_extras, tuple(shadow))
-        self.assertEqual(result.unknown, ("髪1",))
+        self.assertEqual(result.known_extras, tuple(shadow) + ("髪1",))
+        self.assertEqual(result.sway_extras, ("髪1",))
+        self.assertEqual(result.unknown, ("Root",))
         self.assertTrue(result.is_semi_standard_compliant)
 
     def test_mixamo_namespace_in_map_bones(self):
@@ -807,11 +1034,12 @@ class MapBonesTest(unittest.TestCase):
         self.assertFalse(result.is_semi_standard_compliant)
 
     def test_duplicates_count_once(self):
-        result = map_bones(["左腕", "左腕", "髪1", "髪1", "upperChest", "upperChest"])
+        result = map_bones(["左腕", "左腕", "Root", "Root", "髪1", "髪1", "upperChest", "upperChest"])
         self.assertEqual(result.mapping, {"左腕": "左腕"})
         self.assertEqual(result.conflicts, {})
-        self.assertEqual(result.unknown, ("髪1",))
-        self.assertEqual(result.known_extras, ("upperChest",))
+        self.assertEqual(result.unknown, ("Root",))
+        self.assertEqual(result.known_extras, ("髪1", "upperChest"))
+        self.assertEqual(result.sway_extras, ("髪1",))
 
     def test_empty_input(self):
         result = map_bones([])
@@ -840,8 +1068,10 @@ class MapBonesTest(unittest.TestCase):
                     map_bones(bad)
 
     def test_order_independent(self):
-        names = VROID + ["腕.L", "左腕", "arm_R", "腕.R", "LeftLeg", "髪1"]
+        names = VROID + ["腕.L", "左腕", "arm_R", "腕.R", "LeftLeg", "髪1", "スカート_0_0", "LeftForeArmTwist"]
         base = map_bones(names)
+        self.assertEqual(set(base.sway_extras), {"髪1", "スカート_0_0", "J_Sec_L_Bust1", "J_Sec_L_Bust2",
+                                                 "J_Sec_R_Bust1", "J_Sec_R_Bust2", "J_Sec_Hair1_01", "J_Sec_Hair2_01"})
         rng = random.Random(0)
         for _ in range(5):
             shuffled = names[:]
@@ -851,6 +1081,8 @@ class MapBonesTest(unittest.TestCase):
             self.assertEqual(list(result.mapping), [n for n in shuffled if n in base.mapping])  # 入力の順
             self.assertEqual(set(result.unknown), set(base.unknown))
             self.assertEqual(set(result.known_extras), set(base.known_extras))
+            self.assertEqual(set(result.sway_extras), set(base.sway_extras))
+            self.assertEqual(list(result.sway_extras), [n for n in shuffled if n in base.sway_extras])  # 入力の順
             self.assertEqual({k: set(v) for k, v in result.conflicts.items()},
                              {k: set(v) for k, v in base.conflicts.items()})
             self.assertEqual(list(result.conflicts), list(base.conflicts))  # 共通の名前の順
@@ -882,6 +1114,19 @@ class MapBonesTest(unittest.TestCase):
         self.assertEqual(list(result.by_canonical), ["センター", "頭", "左手首", "右手首"])
         self.assertEqual(result.by_canonical["左手首"], "J_Bip_L_Hand")
 
+    def test_mmd_model_with_sway_bones(self):
+        """よくある MMD のモデル：揺れ物の骨は聞かず（sway_extras）、人型の骨らしい名前と分からない名前だけを聞く"""
+        sway = ["髪1", "前髪_1", "後ろ髪_1_1", "スカート_0_0", "スカート_0_1", "左胸", "右胸", "リボン"]
+        names = list(canonical_names()) + sway + ["Root", "謎の骨", "LeftForeArmTwist", "操作中心", "_dummy_左足D"]
+        result = map_bones(names)
+        check_partition(self, names, result)
+        self.assertTrue(result.is_semi_standard_compliant)
+        self.assertEqual(result.mapping, {n: n for n in canonical_names()})
+        self.assertEqual(result.unknown, ("Root", "謎の骨", "LeftForeArmTwist"))
+        self.assertEqual(result.known_extras, tuple(sway) + ("操作中心", "_dummy_左足D"))
+        self.assertEqual(result.sway_extras, tuple(sway))
+        self.assertEqual(len(result.sway_extras), 8)
+
     def test_result_is_frozen(self):
         result = map_bones(["左腕"])
         with self.assertRaises(dataclasses.FrozenInstanceError):
@@ -898,6 +1143,7 @@ class BrokenDataTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
+        self.original_dir = bones.DATA_DIR
         for path in bones.DATA_DIR.glob("*.json"):
             shutil.copy(path, self.dir / path.name)
         patcher = mock.patch.object(bones, "DATA_DIR", self.dir)
@@ -905,6 +1151,10 @@ class BrokenDataTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         bones._dictionary.cache_clear()
         self.addCleanup(bones._dictionary.cache_clear)  # ほかのテストは本物の辞書で動かす
+
+    def reset(self, file_name):
+        """写しのファイルを、本物の辞書のファイルに戻す（subTest ごとに、壊し方が重ならないように）"""
+        shutil.copy(self.original_dir / file_name, self.dir / file_name)
 
     def edit(self, file_name, change):
         path = self.dir / file_name
@@ -1011,6 +1261,72 @@ class BrokenDataTest(unittest.TestCase):
         self.assert_broken("aliases_mixamo.json",
                            lambda d: d["tables"]["mixamo"].update({"namespaces": ["mixamorig:"]}),
                            "表 mixamo の namespaces に、比べる形が空になる名前があります")
+
+    # 揺れ物の名前の決まり（extras_sway.json）
+
+    def test_sway_lists_must_be_lists_of_names(self):
+        for key in ("substrings", "tokens"):
+            for bad in ("hair", None, [1], {"a": "b"}):
+                with self.subTest(key=key, bad=bad):
+                    self.reset(bones.SWAY_FILE)
+                    self.assert_broken(bones.SWAY_FILE, lambda d: d.update({key: bad}),
+                                       f"extras_sway.json: {key} は、名前（文字列）のリスト")
+
+    def test_sway_list_missing(self):
+        self.assert_broken(bones.SWAY_FILE, lambda d: d.pop("tokens"), "extras_sway.json: tokens は、名前（文字列）のリスト")
+
+    def test_sway_token_must_be_one_lowercase_word(self):
+        # 数字・区切り・大文字の切れ目・日本語の字を含む語は、name_tokens() の語にならないので、黙って効かなくなる
+        for bad in ("hair1", "j_sec", "Hair", "hairTie", "hair tie", "髪", "", "ｈａｉｒ"):
+            with self.subTest(bad=bad):
+                self.reset(bones.SWAY_FILE)
+                self.assert_broken(bones.SWAY_FILE, lambda d: d["tokens"].append(bad),
+                                   f"tokens の {re.escape(repr(bad))} は、英字の小文字（a〜z）だけの1語")
+
+    def test_sway_substring_must_be_japanese_only(self):
+        # 英字を字の並びとして比べると、forearm の中の ear のように人型の骨の名前にも当たる
+        for bad in ("ear", "髪1", "髪_", "", "　", "ＩＫ"):
+            with self.subTest(bad=bad):
+                self.reset(bones.SWAY_FILE)
+                self.assert_broken(bones.SWAY_FILE, lambda d: d["substrings"].append(bad),
+                                   f"substrings の {re.escape(repr(bad))} は、日本語の字だけで書いてください")
+
+    def test_sway_pattern_must_not_hit_a_humanoid_name(self):
+        # 人型の骨の名前に当たる決まりは広すぎる（LeftForeArmTwist・左腕捩4 なども隠してしまう）
+        cases = (
+            ("substrings", "首", "揺れ物の名前の決まり（首）が、人型の骨の名前 首（mmd_semi_standard.json）に当たります"),
+            ("substrings", "肘", "揺れ物の名前の決まり（肘）が、人型の骨の名前 左肘（aliases_mmd.json の表 mmd_ja_extras）"),
+            ("tokens", "l", "揺れ物の名前の決まり（l）が、人型の骨の名前 目.L（mmd_semi_standard.json）"),
+            ("tokens", "arm", "揺れ物の名前の決まり（arm）が、人型の骨の名前 "),
+            ("tokens", "fore", "揺れ物の名前の決まり（fore）が、人型の骨の名前 "),
+            ("tokens", "spine", "揺れ物の名前の決まり（spine）が、人型の骨の名前 "),
+        )
+        for key, value, message in cases:
+            with self.subTest(key=key, value=value):
+                self.reset(bones.SWAY_FILE)
+                self.assert_broken(bones.SWAY_FILE, lambda d: d[key].append(value), re.escape(message))
+
+    def test_sway_list_is_data_driven(self):
+        """揺れ物の名前は、プログラムを変えずに data/extras_sway.json に書き足せる"""
+        self.assertFalse(is_sway_name("Hairpin_1"))
+        self.assertFalse(is_sway_name("かんざし1"))
+        self.assertEqual(map_bones(["Hairpin_1"]).unknown, ("Hairpin_1",))
+
+        def add(d):
+            d["tokens"].append("hairpin")
+            d["substrings"].append("かんざし")
+        self.edit(bones.SWAY_FILE, add)
+        bones._dictionary.cache_clear()
+        self.assertTrue(is_sway_name("Hairpin_1"))
+        self.assertTrue(is_sway_name("かんざし1"))
+        self.assertEqual(map_bones(["Hairpin_1"]).sway_extras, ("Hairpin_1",))
+        # 決まりを空にすると、揺れ物の骨は無くなる（髪1 はユーザーに聞く）
+        self.edit(bones.SWAY_FILE, lambda d: d.update({"substrings": [], "tokens": []}))
+        bones._dictionary.cache_clear()
+        self.assertFalse(is_sway_name("髪1"))
+        self.assertEqual(map_bones(["髪1", "J_Sec_Hair1_01"]).unknown, ("髪1",))
+        self.assertEqual(map_bones(["髪1", "J_Sec_Hair1_01"]).known_extras, ("J_Sec_Hair1_01",))
+        self.assertEqual(map_bones(["髪1", "J_Sec_Hair1_01"]).sway_extras, ())
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ from blender_ai_tools.model import card, card_bpy, extract_bpy
 from tests.fixtures import mmd_model
 
 LIMIT = thresholds.ROUNDTRIP_MAX_DEVIATION
+TOLERANCE = thresholds.REPRO_TOLERANCE_LENGTH
 KOUMAKAN_ENV = "BLENDER_AI_TOOLS_KOUMAKAN_REPO"
 # Z が上から Y が上へ（X のまわりに -90 度）。convert_blend.py の書き出しで /root に入る
 Z_UP_TO_Y_UP = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
@@ -471,6 +472,20 @@ class BlenderHelpersTest(unittest.TestCase):
     def test_source_shape_keys(self):
         self.assertEqual(roundtrip_bpy.source_shape_keys([self.body]), ("まばたき", "あ"))
 
+    def test_source_weights(self):
+        """メッシュごとの Blender のウェイト（bone_weights と同じ）。5本の骨の頂点は、見本の5本の頂点だけ"""
+        armature = bpy.data.objects[mmd_model.ARMATURE_NAME]
+        skirt = bpy.data.objects[mmd_model.SKIRT_NAME]
+        tables, failed = roundtrip_bpy.source_weights([self.body, skirt], armature)
+        self.assertEqual((list(tables), failed), ([mmd_model.BODY_NAME, mmd_model.SKIRT_NAME], {}))
+        expected, _ = extract_bpy.bone_weights(self.body, armature)
+        np.testing.assert_array_equal(tables[mmd_model.BODY_NAME].bone_ids, expected.bone_ids)
+        np.testing.assert_array_equal(tables[mmd_model.BODY_NAME].weights, expected.weights)
+        deform = extract_bpy.bone_rest(armature, space="armature").deform
+        np.testing.assert_array_equal(roundtrip.limited_vertices(tables[mmd_model.BODY_NAME], deform=deform),
+                                      sorted(self.info["five_influence_vertices"]))
+        np.testing.assert_array_equal(roundtrip.limited_vertices(tables[mmd_model.SKIRT_NAME], deform=deform), [])
+
     def test_test_poses_bend_knees_and_elbows_normally(self):
         """確かめのポーズを本物の見本に当てると、ひざ・ひじは、ふつうの向きに曲がる（逆曲がりにしない）。
 
@@ -520,29 +535,37 @@ class BlenderHelpersTest(unittest.TestCase):
 # MARK: - (c) 本物の convert_blend.py
 
 
-def add_torso_mask(info):
-    """胴を隠す MASK（convert_blend.py は、その頂点を消して書き出す）。隠れる頂点の印を返す"""
+def add_hiding_mask(vertices):
+    """Body の頂点 vertices を隠す MASK（convert_blend.py は、その頂点を消して書き出す）。隠れる頂点の印を返す"""
     body = bpy.data.objects[mmd_model.BODY_NAME]
-    start, stop = info["parts"][mmd_model.BODY_NAME]["torso"]
     group = body.vertex_groups.new(name="隠す")
-    group.add(list(range(start, stop)), 1.0, "REPLACE")
+    group.add([int(v) for v in vertices], 1.0, "REPLACE")
     modifier = body.modifiers.new("服で隠す", "MASK")
     modifier.mode = "VERTEX_GROUP"
     modifier.vertex_group = "隠す"
     modifier.invert_vertex_group = True
     hidden = np.zeros(len(body.data.vertices), dtype=bool)
-    hidden[start:stop] = True
+    hidden[list(vertices)] = True
     return hidden
+
+
+def add_torso_mask(info):
+    """胴を隠す MASK。隠れる頂点の印を返す"""
+    start, stop = info["parts"][mmd_model.BODY_NAME]["torso"]
+    return add_hiding_mask(range(start, stop))
 
 
 # アーマチュアのオブジェクトの大きさ（スケール）を変えた見本の大きさ。骨格の空間の長さは、アプリでこの倍になる
 ARMATURE_SCALE = 2.0
 
 
-def build_fixture(mask, scale=1.0):
+def build_fixture(mask, scale=1.0, *, five_influences=True, hide_five=False):
+    """見本を作る。mask：胴を隠す MASK。hide_five：5本の骨の頂点を隠す MASK。five_influences：5本の骨の頂点を作るか"""
     bpy.ops.wm.read_homefile(use_empty=True)
-    info = mmd_model.build_model()
+    info = mmd_model.build_model(five_influences=five_influences)
     hidden = add_torso_mask(info) if mask else None
+    if hide_five:
+        hidden = add_hiding_mask(info["five_influence_vertices"])
     bpy.data.objects[mmd_model.ARMATURE_NAME].scale = (scale, scale, scale)
     bpy.context.view_layer.update()
     return info, hidden
@@ -569,11 +592,13 @@ class ConverterRoundtripTest(unittest.TestCase):
         root = Path(folder.name)
         cls.runs = {mask: cls.convert(root / ("masked" if mask else "plain"), mask) for mask in (False, True)}
         cls.runs["scaled"] = cls.convert(root / "scaled", False, ARMATURE_SCALE)
+        cls.runs["four"] = cls.convert(root / "four", False, five_influences=False)
+        cls.runs["five_hidden"] = cls.convert(root / "five_hidden", False, hide_five=True)
 
     @classmethod
-    def convert(cls, folder, mask, scale=1.0):
+    def convert(cls, folder, mask, scale=1.0, **options):
         """見本を保存し、E1 の run_convert（本物の convert_blend.py）で書き出す。書き出せなければ失敗にする"""
-        info, _ = build_fixture(mask, scale)
+        info, _ = build_fixture(mask, scale, **options)
         blend = mmd_model.save_model(folder / "model.blend")
         result = convert.run_convert(blend, folder / "out", blender=bpy.app.binary_path, repo=cls.repo)
         if not result.ok:
@@ -638,7 +663,7 @@ class ConverterRoundtripTest(unittest.TestCase):
                          [roundtrip.COVERAGE_NAME] + [roundtrip.DEVIATION_NAME] * (1 + len(roundtrip.TEST_POSES))
                          + [roundtrip.SKELETON_NAME, roundtrip.JOINT_NAMES_NAME, roundtrip.HUMANOID_NAME,
                             roundtrip.SHAPE_KEYS_NAME, roundtrip.INFLUENCES_NAME, roundtrip.WEIGHT_SUMS_NAME,
-                            roundtrip.PHYSICS_NAME])
+                            roundtrip.INFLUENCE_EFFECT_NAME, roundtrip.PHYSICS_NAME])
         by_name = {m.name: m for m in results}
         coverage = by_name[roundtrip.COVERAGE_NAME]
         self.assertEqual(coverage.signal, Signal.GREEN, coverage.reason)
@@ -659,6 +684,28 @@ class ConverterRoundtripTest(unittest.TestCase):
         np.testing.assert_allclose(measured, expected, atol=2e-6)
         self.assertEqual({row["source_index"] for row in elbows.details["worst"][:4]}, set(five.tolist()))
         self.assertAlmostEqual(elbows.value, float(expected.max()), delta=2e-6)
+        # 形のずれ（roundtrip_deviation）は、いままでどおり基準だけで決める：0.46mm は 0.5mm 未満なので緑
+        self.assertLess(elbows.value, LIMIT)
+        self.assertEqual(elbows.signal, Signal.GREEN)
+
+        # 1点4本までにした影響：5本の頂点の形が変わるので黄（ユーザーと決めた）。値は elbows の5本の頂点のずれ
+        effect = by_name[roundtrip.INFLUENCE_EFFECT_NAME]
+        self.assertEqual(effect.signal, Signal.YELLOW, effect.reason)
+        self.assertEqual(effect.value, elbows.value)
+        self.assertAlmostEqual(effect.value, 0.00046, delta=0.00002)  # 約 0.46mm
+        self.assertEqual(effect.details["limited_count"], 4)
+        self.assertEqual(effect.details["changed_count"], 4)
+        self.assertEqual(effect.details["unmeasured_count"], 0)
+        self.assertEqual(effect.details["poses"], (roundtrip.REST_POSE, *roundtrip.TEST_POSES))
+        self.assertEqual(effect.details["hidden_limited"], {})
+        limited = effect.details["meshes"][mmd_model.BODY_NAME]
+        np.testing.assert_array_equal(limited["limited"], np.sort(five))
+        np.testing.assert_allclose(limited["deviations"], expected[np.argsort(five)], atol=2e-6)
+        self.assertEqual(limited["worst_pose"], ("elbows",) * 4)
+        for pose in (roundtrip.REST_POSE, "arms_up", "knees", "twist"):
+            # ほかのポーズでは、5本の骨がいっしょに動く（か、動かない）ので、4本にしても形は変わらない
+            self.assertLess(float(limited["poses"][pose].max()), TOLERANCE, pose)
+        np.testing.assert_array_equal(effect.details["meshes"][mmd_model.SKIRT_NAME]["limited"], [])
 
         for name in (roundtrip.JOINT_NAMES_NAME, roundtrip.HUMANOID_NAME, roundtrip.SHAPE_KEYS_NAME,
                      roundtrip.WEIGHT_SUMS_NAME, roundtrip.PHYSICS_NAME):
@@ -699,6 +746,8 @@ class ConverterRoundtripTest(unittest.TestCase):
         self.assertEqual(over, len(self.info["five_influence_vertices"]))
         self.assertEqual(summary["vertices_limited"], over)
         self.assertEqual(by_name[roundtrip.INFLUENCES_NAME].value, float(limit))
+        # E2 が「4本にされた」と数えた頂点の数も、E1 が絞った頂点の数と同じ（convert_blend.py と同じ数え方）
+        self.assertEqual(by_name[roundtrip.INFLUENCE_EFFECT_NAME].details["limited_count"], summary["vertices_limited"])
         # 腕の下がり角：E1 の報告 = rig の restArmDownDegrees = A1 の登録カード（同じ式・同じ丸め）。
         # アーマチュアの大きさだけを変えた見本でも同じ（向きを変えない大きさでは、世界とアーマチュアの空間で同じ角度）
         model_card = card_bpy.build_card()
@@ -855,6 +904,43 @@ class ConverterRoundtripTest(unittest.TestCase):
         self.assertEqual(by_key[(roundtrip.DEVIATION_NAME, roundtrip.REST_POSE)].signal, Signal.GREEN)
         key = (roundtrip.SKELETON_NAME, None)
         self.assertAlmostEqual(by_key[key].value, ARMATURE_SCALE * plain[key].value, delta=1e-6)
+        # 1点4本までにした影響も、アプリの長さで 0.92mm になり、基準を超えて赤
+        key = (roundtrip.INFLUENCE_EFFECT_NAME, None)
+        self.assertEqual(plain[key].signal, Signal.YELLOW)
+        self.assertEqual(by_key[key].signal, Signal.RED)
+        self.assertEqual(by_key[key].value, elbows.value)
+        self.assertAlmostEqual(by_key[key].value, ARMATURE_SCALE * plain[key].value, delta=1e-7)
+
+    def test_four_influences_is_green(self):
+        """5本の骨の頂点が無い見本：convert_blend.py は1つも絞らず、E2 も「4本を超える頂点はありません」の緑"""
+        self.info, self.hidden = build_fixture(False, five_influences=False)
+        self.assertEqual(self.info["five_influence_vertices"], [])
+        run = self.runs["four"]
+        self.assertEqual(run["convert"].summary["vertices_limited"], 0)
+        results = roundtrip_bpy.run_roundtrip(run["usdz"], run["rig"])
+        effect = next(m for m in results if m.name == roundtrip.INFLUENCE_EFFECT_NAME)
+        self.assertEqual((effect.signal, effect.value, effect.reason), (Signal.GREEN, 0.0, "4本を超える頂点はありません"))
+        self.assertEqual(effect.details["limited_count"], 0)
+        # 5本の頂点が無いので、elbows のずれも float の誤差だけ
+        elbows = self.deviations(results)["elbows"]
+        self.assertEqual(elbows.signal, Signal.GREEN)
+        self.assertLess(elbows.value, TOLERANCE)
+
+    def test_hidden_five_influence_vertices_are_not_counted(self):
+        """5本の骨の頂点を MASK で隠すと、convert_blend.py は頂点を消してから4本にするので、どれも絞らない。
+        E2 も、その頂点を数えない（緑。消えた頂点は details["hidden_limited"]）"""
+        self.info, self.hidden = build_fixture(False, hide_five=True)
+        five = np.sort(np.array(self.info["five_influence_vertices"]))
+        run = self.runs["five_hidden"]
+        self.assertEqual(run["convert"].summary["vertices_limited"], 0)
+        self.assertEqual(run["convert"].summary["masked_vertices_removed"], len(five))
+        results = roundtrip_bpy.run_roundtrip(run["usdz"], run["rig"])
+        self.assertEqual(results[0].signal, Signal.GREEN, results[0].reason)  # 消えるはずの頂点だけが消えた
+        effect = next(m for m in results if m.name == roundtrip.INFLUENCE_EFFECT_NAME)
+        self.assertEqual((effect.signal, effect.value), (Signal.GREEN, 0.0))
+        self.assertEqual(effect.reason, "4本を超える頂点は、服で隠れて書き出されない物だけです")
+        np.testing.assert_array_equal(effect.details["hidden_limited"][mmd_model.BODY_NAME], five)
+        self.assertEqual(effect.details["limited_count"], 0)
 
 
 if __name__ == "__main__":

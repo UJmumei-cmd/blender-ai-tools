@@ -29,6 +29,10 @@ USD を読む所（pxr）は usd_read_bpy.py、Blender から形とポーズを�
   convert_blend.py は頂点の並びを変えない（服で隠す MASK で消した頂点だけが抜ける）ので、まず並びのまま対応させ、
   合わないときだけ、いちばん近い点で対応させる。
 - 信号：測れなかった点・骨があるときは、緑にしない（灰。CLAUDE.md 2章5）。
+- 1点4本まで（convert_blend.py の limit_bone_weights は、重い順に4本を残して合計を 1 に直す）で形が少しでも変わる
+  頂点があれば黄にする（ユーザーと決めた。check_influence_limit）。基準（ROUNDTRIP_MAX_DEVIATION）以上なら赤。
+  「少しでも」は、再現性の幅（REPRO_TOLERANCE_LENGTH）を超えること。形のずれ（roundtrip_deviation）は、いままでどおり
+  基準だけで決める。
 """
 
 from __future__ import annotations
@@ -49,13 +53,14 @@ from ..measure.geometry import (WORST_LIST_LENGTH, as_array, as_nonnegative_floa
                                 weld_exact, worst_indices)
 from ..measure.results import Measurement, Signal, classify, worst
 from ..measure.symmetry import nearest_distances
-from ..measure.weights import WeightTable, linear_blend_skinning
+from ..measure.weights import WeightTable, influence_counts, linear_blend_skinning
 
 __all__ = [
     "COVERAGE_NAME",
     "DEVIATION_NAME",
     "EXPECTED_PRIM_TYPES",
     "HUMANOID_NAME",
+    "INFLUENCE_EFFECT_NAME",
     "INFLUENCES_NAME",
     "JOINT_NAMES_NAME",
     "PHYSICS_NAME",
@@ -69,6 +74,7 @@ __all__ = [
     "ExportedModel",
     "PointMatch",
     "check_coverage",
+    "check_influence_limit",
     "check_influences",
     "check_names",
     "check_no_physics",
@@ -80,6 +86,7 @@ __all__ = [
     "fan_triangulate",
     "gf_to_column",
     "joint_parents",
+    "limited_vertices",
     "load_rig",
     "local_rotation",
     "match_meshes",
@@ -104,6 +111,7 @@ HUMANOID_NAME = "humanoid_bones"
 SHAPE_KEYS_NAME = "shape_key_names"
 INFLUENCES_NAME = "max_bone_influences"
 WEIGHT_SUMS_NAME = "joint_weight_sums"
+INFLUENCE_EFFECT_NAME = "influence_limit_effect"
 PHYSICS_NAME = "physics_parts"
 
 # 休みの姿勢の名前（compare_rest の details["pose"]）
@@ -1361,6 +1369,246 @@ def check_influences(exported: ExportedModel) -> list[Measurement]:
     else:
         sums = Measurement(WEIGHT_SUMS_NAME, max_deviation, "ratio", Signal.GREEN, "", sums_details)
     return [influences, sums]
+
+
+# MARK: - 1点4本までにした影響
+
+
+def limited_vertices(table: WeightTable, *, deform: Any = None,
+                     limit: int = thresholds.MAX_BONE_INFLUENCES) -> np.ndarray:
+    """convert_blend.py の「1点4本まで」（limit_bone_weights）で重みが変わる頂点の番号 (k,) int64（小さい順）。
+
+    convert_blend.py と同じ数え方にする：形を動かす骨（deform。Blender の use_deform）の重みのうち、0 より大きい物が
+    limit 本を超える頂点。measure.weights.influence_counts を epsilon=0 で使う（convert_blend.py は、ごく小さい重みも
+    数えて外すので、WEIGHT_EPSILON より小さい重みも数える）。
+    table：Blender のウェイト（model.extract_bpy.bone_weights。骨の番号は deform の番号）。
+    deform：(B,) の真偽の並び（BoneRest.deform）。None なら全部の骨が形を動かす。
+    """
+    if not isinstance(table, WeightTable):
+        raise ValueError(f"table は WeightTable にしてください（いまの型：{type(table).__name__}）")
+    if isinstance(limit, (bool, np.bool_)) or not isinstance(limit, (int, np.integer)) or limit < 1:
+        raise ValueError(f"limit は 1 以上の整数にしてください（いまの値：{limit!r}）")
+    counts = influence_counts(table, epsilon=0.0, deform=deform)
+    return np.flatnonzero(counts > int(limit)).astype(np.int64)
+
+
+def _as_deviation_results(value: Any) -> list[Measurement]:
+    """roundtrip_deviation の結果の並び（compare_rest・compare_pose の答え）にする。ほかの物は ValueError"""
+    if isinstance(value, (str, bytes, Measurement)) or not isinstance(value, Iterable):
+        raise ValueError("deviations は roundtrip_deviation の結果（Measurement）の並びにしてください")
+    results = list(value)
+    seen: set[str] = set()
+    for result in results:
+        if not isinstance(result, Measurement) or result.name != DEVIATION_NAME:
+            raise ValueError(f"deviations の中身は {DEVIATION_NAME} の結果にしてください（いまの物：{result!r:.80}）")
+        pose = result.details.get("pose")
+        if not isinstance(pose, str) or not pose:
+            raise ValueError(f"{DEVIATION_NAME} の結果に、ポーズの名前（details[\"pose\"]）がありません")
+        if pose in seen:
+            raise ValueError(f"ポーズ {pose!r} の結果が2つあります")
+        seen.add(pose)
+    return results
+
+
+def _as_weight_map(value: Any) -> dict[str, WeightTable]:
+    if not isinstance(value, Mapping):
+        raise ValueError("source_weights は 元のメッシュの名前 → WeightTable の辞書にしてください")
+    result = {}
+    for name, table in value.items():
+        if not isinstance(name, str):
+            raise ValueError("source_weights の鍵は、メッシュの名前（文字列）にしてください")
+        if not isinstance(table, WeightTable):
+            raise ValueError(f"source_weights[{name!r}] は WeightTable にしてください（いまの型：{type(table).__name__}）")
+        result[name] = table
+    return result
+
+
+def _vertex_deviations(vertices: np.ndarray, entries: Sequence[tuple[Any, Any]]) -> np.ndarray:
+    """元の頂点 vertices (k,)（小さい順、重なり無し）ごとの、1つのポーズのずれ (k,)。
+
+    entries：その元のメッシュの形ごとの (source_index (P,), deviations (P,))（compare_pose の details["meshes"] の値）。
+    元の頂点に対応した書き出した点のうち、いちばん大きいずれ。対応した点が無い・どれかが測れない（NaN）頂点は NaN
+    """
+    best = np.full(len(vertices), -np.inf)
+    found = np.zeros(len(vertices), dtype=bool)
+    broken = np.zeros(len(vertices), dtype=bool)
+    for source_index, deviations in entries:
+        index = np.asarray(source_index)
+        values = np.asarray(deviations, dtype=np.float64)
+        if index.ndim != 1 or index.shape != values.shape or (index.size and index.dtype.kind not in "iu"):
+            raise ValueError("roundtrip_deviation の details の source_index と deviations の形が合いません")
+        hit = np.isin(index, vertices)
+        if not hit.any():
+            continue
+        position = np.searchsorted(vertices, index[hit])
+        values = values[hit]
+        missing = np.isnan(values)
+        found[position] = True
+        np.logical_or.at(broken, position, missing)
+        np.maximum.at(best, position[~missing], values[~missing])
+    return np.where(found & ~broken, best, np.nan)
+
+
+def check_influence_limit(deviations: Iterable[Measurement], source_weights: Mapping[str, WeightTable], *,
+                          deform: Any = None, expected_missing: Any = None,
+                          unmeasured: Mapping[str, str] | None = None) -> Measurement:
+    """1点4本まで（convert_blend.py が重い順に4本を残し、合計を 1 に直す）で、形が変わったか（"influence_limit_effect"、"m"）。
+
+    deviations：休みの姿勢と確かめのポーズの "roundtrip_deviation"（compare_rest・compare_pose の答え）。
+    source_weights：元のメッシュの名前 → Blender のウェイト（extract_bpy.bone_weights）。deform：(B,)（BoneRest.deform）。
+    expected_missing：元のメッシュの名前 → MASK で消えるはずの頂点の印 (S,)。convert_blend.py は、MASK で頂点を消してから
+    4本にするので、消える頂点は数えない（details["hidden_limited"] に出す）。
+    unmeasured：元のメッシュの名前 → ウェイトを読めなかった理由（そのメッシュは調べられないので灰）。
+
+    - 4本を超える頂点（limited_vertices）の、休みの姿勢とどのポーズの中でも、いちばん大きいずれが値（アプリで見える長さ）。
+    - 値が ROUNDTRIP_MAX_DEVIATION 以上で赤、REPRO_TOLERANCE_LENGTH を超えれば黄（ユーザーと決めた：少しでも変われば黄）。
+      4本を超える頂点はあるが、変わりが再現性の幅の中なら緑。
+    - 4本を超える頂点が無いときは、値 0 の緑（ウェイトを数えたので、測った結果）。
+    - 測れないときは、赤でないかぎり灰：ずれを測れない頂点（書き出されていない・骨の行列が分からない）、形を計算できなかった
+      ポーズ（details に "meshes" が無い）、骨が動かなかったポーズ（details["moved_joint_count"] が 0。compare_pose に
+      rest を渡したときに入る）、休みの姿勢のほかに測ったポーズが無い、ウェイトを読めなかったメッシュ、調べるメッシュが無い。
+      休みの姿勢では、骨の重みを変えても形は変わらないので、休みの姿勢だけでは確かめたことにしない。
+    details["meshes"][元のメッシュの名前]："limited"（4本を超える頂点の番号）、"deviations"（頂点ごとの、いちばん大きいずれ。
+    測れなかった頂点は NaN）、"worst_pose"（そのずれのポーズ）、"poses"（ポーズ → 頂点ごとのずれ）、"unmeasured"。
+    """
+    results = _as_deviation_results(deviations)
+    tables = _as_weight_map(source_weights)
+    hidden = _as_mask_map(expected_missing, {name: table.vertex_count for name, table in tables.items()},
+                          "expected_missing")
+    if unmeasured is not None and not isinstance(unmeasured, Mapping):
+        raise ValueError("unmeasured は メッシュの名前 → 理由 の辞書にしてください")
+    skipped = {str(name): str(reason) for name, reason in (unmeasured or {}).items()}
+
+    # 4本を超える頂点（MASK で消える頂点は、convert_blend.py が先に消すので除く）
+    limited: dict[str, np.ndarray] = {}
+    hidden_limited: dict[str, np.ndarray] = {}
+    for name, table in tables.items():
+        if name in skipped:
+            continue
+        indices = limited_vertices(table, deform=deform)
+        mask = hidden.get(name)
+        if mask is not None and len(indices):
+            gone = mask[indices]
+            if gone.any():
+                hidden_limited[name] = indices[gone]
+            indices = indices[~gone]
+        limited[name] = indices
+    limited_total = sum(len(v) for v in limited.values())
+
+    # ポーズごとの、4本を超える頂点のずれ
+    poses: list[str] = []
+    unmeasured_poses: list[str] = []
+    unexercised_poses: list[str] = []
+    exercised = False
+    per_pose: dict[str, dict[str, np.ndarray]] = {name: {} for name in limited}
+    for result in results:
+        pose = result.details["pose"]
+        meshes = result.details.get("meshes")
+        if not isinstance(meshes, Mapping):
+            unmeasured_poses.append(pose)
+            continue
+        poses.append(pose)
+        if pose != REST_POSE:
+            if result.details.get("moved_joint_count") == 0:
+                unexercised_poses.append(pose)
+            else:
+                exercised = True
+        entries: dict[str, list[tuple[Any, Any]]] = {}
+        for detail in meshes.values():
+            entries.setdefault(detail["source_name"], []).append((detail["source_index"], detail["deviations"]))
+        for name, indices in limited.items():
+            per_pose[name][pose] = _vertex_deviations(indices, entries.get(name, []))
+
+    mesh_details: dict[str, dict[str, Any]] = {}
+    rows: list[tuple[float, str, int, str]] = []
+    values: list[np.ndarray] = []
+    unmeasured_count = 0
+    changed_count = 0
+    over_limit_count = 0
+    for name, indices in limited.items():
+        stack = np.array([per_pose[name][pose] for pose in poses]).reshape(len(poses), len(indices))
+        missing = np.isnan(stack)
+        filled = np.where(missing, -np.inf, stack)
+        best = filled.max(axis=0) if len(poses) else np.full(len(indices), -np.inf)
+        measured = np.isfinite(best)
+        vertex_max = np.where(measured, best, np.nan)
+        worst_pose = filled.argmax(axis=0) if len(poses) else np.zeros(len(indices), dtype=np.int64)
+        incomplete = missing.any(axis=0) | bool(unmeasured_poses) | (not poses)
+        unmeasured_count += int(incomplete.sum())
+        changed_count += int((measured & (vertex_max > thresholds.REPRO_TOLERANCE_LENGTH)).sum())
+        over_limit_count += int((measured & (vertex_max >= thresholds.ROUNDTRIP_MAX_DEVIATION)).sum())
+        if measured.any():
+            values.append(vertex_max[measured])
+        for k in np.flatnonzero(measured):
+            rows.append((float(vertex_max[k]), name, int(indices[k]), poses[int(worst_pose[k])]))
+        mesh_details[name] = {
+            "limited": indices,
+            "deviations": vertex_max,
+            "worst_pose": tuple(poses[int(p)] if ok else None for p, ok in zip(worst_pose, measured)),
+            "poses": {pose: per_pose[name][pose] for pose in poses},
+            "unmeasured": indices[incomplete],
+        }
+
+    rows.sort(key=lambda row: (-row[0], row[1], row[2]))
+    details: dict[str, Any] = {
+        "limit": thresholds.MAX_BONE_INFLUENCES,
+        "tolerance": thresholds.REPRO_TOLERANCE_LENGTH,
+        "red_limit": thresholds.ROUNDTRIP_MAX_DEVIATION,
+        "limited_count": limited_total,
+        "changed_count": changed_count,
+        "over_limit_count": over_limit_count,
+        "unmeasured_count": unmeasured_count,
+        "poses": tuple(poses),
+        "unmeasured_poses": tuple(unmeasured_poses),
+        "unexercised_poses": tuple(unexercised_poses),
+        "hidden_limited": hidden_limited,
+        "unmeasured_meshes": skipped,
+        "worst": [{"mesh": name, "source_index": index, "pose": pose, "deviation": value}
+                  for value, name, index, pose in rows[:WORST_LIST_LENGTH]],
+        "meshes": mesh_details,
+    }
+
+    # 4本を超える頂点が無いとき（ウェイトを数えて確かめたので、緑にしてよい）
+    if not tables and not skipped:
+        return Measurement.unmeasured(INFLUENCE_EFFECT_NAME, "m", "ウェイトを調べるメッシュがありません", details)
+    if limited_total == 0:
+        if skipped:
+            return Measurement.unmeasured(INFLUENCE_EFFECT_NAME, "m",
+                                          "ウェイトを読めなかったメッシュがあります（4本を超える頂点を数えられません）",
+                                          details)
+        reason = ("4本を超える頂点はありません" if not hidden_limited
+                  else "4本を超える頂点は、服で隠れて書き出されない物だけです")
+        return Measurement(INFLUENCE_EFFECT_NAME, 0.0, "m", Signal.GREEN, reason, details)
+
+    # 4本を超える頂点があるとき
+    if not values:
+        return Measurement.unmeasured(INFLUENCE_EFFECT_NAME, "m",
+                                      "4本を超える頂点の、形のずれを測れませんでした（書き出されていないか、骨の行列が分かりません）",
+                                      details)
+    value = float(np.concatenate(values).max())
+    reasons = []
+    if value >= thresholds.ROUNDTRIP_MAX_DEVIATION:
+        signal = Signal.RED
+        reasons.append("1点4本までにしたことで、形が基準以上変わる頂点があります")
+    elif value > thresholds.REPRO_TOLERANCE_LENGTH:
+        signal = Signal.YELLOW
+        reasons.append("1点4本までにしたことで、形が変わる頂点があります（重みの小さい骨が外れるため）")
+    else:
+        signal = Signal.GREEN
+        reasons.append("4本を超える頂点はありますが、形の変わりは再現性の幅の中です")
+    gray_reasons = []
+    if unmeasured_count:
+        gray_reasons.append("4本を超える頂点のうち、ずれを測れなかった物があります")
+    if unexercised_poses:
+        gray_reasons.append("骨が動かなかったポーズがあります（そのポーズでは確かめられません）")
+    if not exercised:
+        gray_reasons.append("骨を動かしたポーズで測れていないので、4本にした影響を確かめられません")
+    if skipped:
+        gray_reasons.append("ウェイトを読めなかったメッシュがあります")
+    if gray_reasons:
+        signal = worst([signal, Signal.GRAY])
+        reasons.extend(gray_reasons)
+    return Measurement(INFLUENCE_EFFECT_NAME, value, "m", signal, "。".join(reasons), details)
 
 
 # MARK: - 物理の部品

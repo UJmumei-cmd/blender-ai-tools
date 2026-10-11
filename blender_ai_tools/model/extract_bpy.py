@@ -105,6 +105,17 @@ def _world_matrix(obj: Any, depsgraph: Any = None) -> np.ndarray:
     return _matrix(_evaluated(obj, depsgraph).matrix_world)
 
 
+def world_matrix(obj: Any) -> np.ndarray:
+    """オブジェクトの置き方：いまのビューレイヤーで計算した matrix_world (4, 4) float64（列ベクトルに左から掛ける形）。
+
+    位置を変えたばかりで、まだ計算していなくても、新しい値になる。計算に入っていない物（ビューポートで無効など）は
+    古い値のままなので ValueError（モジュールの説明を見る）。A1 の登録カードの置き場所（placement）に使う。
+    """
+    if not isinstance(obj, bpy.types.Object):
+        raise ValueError(f"obj はオブジェクトにしてください（いまの物：{type(obj).__name__}）")
+    return _world_matrix(obj)
+
+
 def _check_pose_position(armature: Any) -> None:
     """レストポジションのアーマチュアは、ポーズを使わない。ポーズとして読ませない"""
     if armature.data.pose_position != "POSE":
@@ -345,6 +356,24 @@ def mesh_rest(obj: Any, *, space: str = "world", armature: Any = None) -> tuple[
     rest_world = _bone_parent_rest_matrix(obj, depsgraph)
     obj_matrix = _world_matrix(obj, depsgraph) if rest_world is None else rest_world
     return _transform_points(_to_space(obj_matrix, arm_matrix, space), vertices), _triangles(mesh)
+
+
+def triangle_materials(obj: Any) -> tuple[np.ndarray, tuple[str, ...]]:
+    """三角形ごとの材質：(材質の番号 (M,) int64, 材質の枠ごとの名前)。
+
+    三角形の並びは mesh_rest の三角形（loop_triangles）と同じ。番号は Blender の material_index のまま
+    （材質の枠の番号。枠の数以上の番号もそのまま返す。どう扱うかは使う側で決める）。
+    名前は obj.material_slots の順（オブジェクトに付けた材質も、メッシュに付けた材質も、いま使われている方）。
+    材質の入っていない枠は ""。枠が1つも無ければ、名前は空（番号はどれも 0）。
+    編集モードの物は、編集中の形を先にデータへ写してから読む（モードはそのまま）。
+    """
+    _check_object(obj, "MESH", "obj")
+    sync_edit_mode(obj)
+    triangles = obj.data.loop_triangles
+    flat = np.empty(len(triangles), dtype=np.int32)
+    triangles.foreach_get("material_index", flat)
+    names = tuple("" if slot.material is None else slot.material.name for slot in obj.material_slots)
+    return flat.astype(np.int64), names
 
 
 def mesh_evaluated(obj: Any, depsgraph: Any = None, *, space: str = "world", armature: Any = None) -> np.ndarray:

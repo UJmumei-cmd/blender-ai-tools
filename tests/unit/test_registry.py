@@ -22,14 +22,16 @@ class RegistryTest(unittest.TestCase):
 
     def test_call_from_llm_reply(self):
         reply = json.dumps({"tool": "bones.map_names",
-                            "params": {"names": ["J_Bip_C_Hips", "J_Bip_L_UpperArm", "左腕", "スカート_L"]}},
+                            "params": {"names": ["J_Bip_C_Hips", "J_Bip_L_UpperArm", "左腕", "スカート_L", "謎の骨"]}},
                            ensure_ascii=False)
         call = parse_tool_call(reply)
         self.assertFalse(self.catalog.needs_confirmation(call.tool))  # 見るだけの道具は確認なしで動く
         result = self.catalog.call(call.tool, call.params)
         json.dumps(result, ensure_ascii=False)  # 結果は JSON にできる
         self.assertEqual(result["mapping"]["J_Bip_C_Hips"], "センター")
-        self.assertEqual(result["unknown"], ["スカート_L"])
+        self.assertEqual(result["unknown"], ["謎の骨"])
+        # 揺れ物の骨は、人の形ではない骨として分かる（ユーザーに聞かない）
+        self.assertIn("スカート_L", result["known_extras"])
         self.assertFalse(result["semi_standard_compliant"])
         # 左腕 と J_Bip_L_UpperArm が同じ骨を取り合うときは、名前がそのものの 左腕 が勝つ
         self.assertEqual(result["mapping"]["左腕"], "左腕")

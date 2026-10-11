@@ -909,5 +909,96 @@ class SetPoseTest(FixtureCase):
                 pass
 
 
+# MARK: - 置き方と材質（A1 の登録カード）
+
+
+class WorldMatrixTest(FixtureCase):
+    def test_matches_blender_after_update(self):
+        self.move_armature()
+        np.testing.assert_array_equal(extract_bpy.world_matrix(self.armature), np.array(self.armature.matrix_world))
+        expected = np.eye(4)
+        expected[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+        expected[:3, 3] = MOVE
+        np.testing.assert_allclose(extract_bpy.world_matrix(self.armature), expected, atol=1e-6)
+        self.assertEqual(extract_bpy.world_matrix(self.armature).dtype, np.float64)
+
+    def test_new_value_without_update(self):
+        """動かしたばかりで depsgraph を計算していなくても、新しい置き方を読む"""
+        self.armature.location = MOVE
+        np.testing.assert_array_equal(np.array(self.armature.matrix_world), np.eye(4))  # 元の物は古いまま
+        np.testing.assert_allclose(extract_bpy.world_matrix(self.armature)[:3, 3], MOVE, atol=1e-6)
+        # 子のメッシュも、親と一緒に動いた置き方になる
+        np.testing.assert_allclose(extract_bpy.world_matrix(self.body)[:3, 3], MOVE, atol=1e-6)
+
+    def test_bad_input(self):
+        with self.assertRaises(ValueError):
+            extract_bpy.world_matrix(self.armature.data)
+        self.body.hide_viewport = True  # 計算に入らない物は、古い値なので読まない
+        bpy.context.view_layer.update()
+        with self.assertRaises(ValueError):
+            extract_bpy.world_matrix(self.body)
+
+
+class TriangleMaterialsTest(FixtureCase):
+    def add_materials(self):
+        """Body に3つの枠（肌・空・髪）を付け、面の材質の番号を 0・1・2・5（枠の外）に分ける"""
+        data = self.body.data
+        data.materials.append(bpy.data.materials.new("肌"))
+        data.materials.append(None)
+        data.materials.append(bpy.data.materials.new("髪"))
+        for index, polygon in enumerate(data.polygons):
+            polygon.material_index = (0, 1, 2, 5)[index % 4]
+        data.update()
+
+    def test_indices_follow_rest_triangles(self):
+        self.add_materials()
+        indices, names = extract_bpy.triangle_materials(self.body)
+        _, triangles = mesh_rest(self.body)
+        self.assertEqual(names, ("肌", "", "髪"))
+        self.assertEqual(indices.dtype, np.int64)
+        self.assertEqual(indices.shape, (len(triangles),))
+        polygons = self.body.data.polygons
+        expected = [polygons[triangle.polygon_index].material_index for triangle in self.body.data.loop_triangles]
+        np.testing.assert_array_equal(indices, expected)
+        self.assertEqual(sorted(set(indices.tolist())), [0, 1, 2, 5])  # 枠の外の番号もそのまま
+        # 三角形の頂点が、同じ面の頂点（mesh_rest と同じ並び）
+        for row, triangle in enumerate(self.body.data.loop_triangles[:50]):
+            self.assertEqual(tuple(triangles[row]), tuple(triangle.vertices))
+
+    def test_no_slots(self):
+        indices, names = extract_bpy.triangle_materials(self.skirt)
+        self.assertEqual(names, ())
+        np.testing.assert_array_equal(indices, np.zeros(len(self.skirt.data.loop_triangles), dtype=np.int64))
+
+    def test_object_linked_material(self):
+        """オブジェクトに付けた材質（link が OBJECT の枠）は、その材質の名前"""
+        self.add_materials()
+        self.body.material_slots[0].link = "OBJECT"
+        self.body.material_slots[0].material = bpy.data.materials.new("顔")
+        _, names = extract_bpy.triangle_materials(self.body)
+        self.assertEqual(names, ("顔", "", "髪"))
+
+    def test_edit_mode_is_read_and_kept(self):
+        import bmesh
+
+        self.add_materials()
+        bpy.context.view_layer.objects.active = self.body
+        bpy.ops.object.mode_set(mode="EDIT")
+        try:
+            edit = bmesh.from_edit_mesh(self.body.data)
+            for face in edit.faces:
+                face.material_index = 2
+            bmesh.update_edit_mesh(self.body.data)
+            indices, _ = extract_bpy.triangle_materials(self.body)
+            self.assertEqual(set(indices.tolist()), {2})
+            self.assertEqual(self.body.mode, "EDIT")
+        finally:
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+    def test_bad_input(self):
+        with self.assertRaises(ValueError):
+            extract_bpy.triangle_materials(self.armature)
+
+
 if __name__ == "__main__":
     unittest.main()

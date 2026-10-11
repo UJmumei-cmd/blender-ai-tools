@@ -15,15 +15,17 @@ import numpy as np
 from blender_ai_tools import thresholds
 from blender_ai_tools.export import roundtrip
 from blender_ai_tools.export.roundtrip import (ExportedBlendShape, ExportedMesh, ExportedModel, PointMatch,
-                                               check_coverage, check_influences, check_names, check_no_physics,
-                                               check_skeleton, compare_pose, compare_rest, compose_rest,
-                                               exported_weight_table, fan_triangulate, gf_to_column, joint_parents,
-                                               load_rig, local_rotation, match_meshes, match_points,
-                                               original_names, path_gaps, posed_joint_matrices, resolve_pose,
-                                               rest_points, skin_exported)
-from blender_ai_tools.measure.results import Signal
+                                               check_coverage, check_influence_limit, check_influences, check_names,
+                                               check_no_physics, check_skeleton, compare_pose, compare_rest,
+                                               compose_rest, exported_weight_table, fan_triangulate, gf_to_column,
+                                               joint_parents, limited_vertices, load_rig, local_rotation,
+                                               match_meshes, match_points, original_names, path_gaps,
+                                               posed_joint_matrices, resolve_pose, rest_points, skin_exported)
+from blender_ai_tools.measure.results import Measurement, Signal
+from blender_ai_tools.measure.weights import WeightTable
 
 LIMIT = thresholds.ROUNDTRIP_MAX_DEVIATION
+TOLERANCE = thresholds.REPRO_TOLERANCE_LENGTH
 
 
 def translation(x, y, z):
@@ -778,6 +780,283 @@ class InfluencesTest(unittest.TestCase):
                             skinned=False)
         model = ExportedModel(joint_paths=("a",), bind=np.eye(4)[None], rest_local=None, meshes=(mesh,))
         self.assertEqual([m.signal for m in check_influences(model)], [Signal.GRAY, Signal.GRAY])
+
+
+# MARK: - 1点4本までにした影響
+
+# 元の Body の3つの頂点の、Blender のウェイト（骨は6本。番号は元のアーマチュアの骨の並び）。
+# 頂点1 だけが、形を動かす骨5本に付いている（convert_blend.py が4本にして、重みを変える）
+FIVE_ROWS = [[(0, 1.0)], [(0, 0.5), (1, 0.3), (2, 0.1), (3, 0.08), (4, 0.02)], [(0, 0.5), (5, 0.5)]]
+SOURCE_WEIGHTS = {"Body": WeightTable.from_lists(FIVE_ROWS)}
+DEFORM = np.ones(6, dtype=bool)
+BODY_PATH = "/root/Arm/Body/Body"
+
+
+def limit_results(shifts=None, *, posed=POSED, poses=("bend",)):
+    """休みの姿勢と、ポーズ（どれも POSED）の roundtrip_deviation。shifts：ポーズの名前 → {頂点: Blender の点を
+    X へずらす長さ}（書き出した形は動かさないので、ずらした長さがそのまま、その頂点のずれになる）"""
+    model, source_rest, matches = rest_setup()
+    results = [compare_rest(model, source_rest, BIND, matches)]
+    for pose in poses:
+        blender = POSED_SKEL.copy()
+        for vertex, shift in (shifts or {}).get(pose, {}).items():
+            blender[vertex, 0] += shift
+        results.append(compare_pose(model, {"Body": blender}, posed, matches, pose=pose, rest=BIND))
+    return results
+
+
+def deviation_result(pose, source_index, deviations, *, source_name="Body", moved=1):
+    """compare_pose の答えと同じ形の details を持つ、手で作った roundtrip_deviation（値の境目を、ぴったり試すため）"""
+    details = {"pose": pose, "meshes": {BODY_PATH: {"source_name": source_name,
+                                                    "source_index": np.array(source_index, dtype=np.int64),
+                                                    "deviations": np.array(deviations, dtype=np.float64)}}}
+    if pose != "rest":
+        details["moved_joint_count"] = moved
+    return Measurement(roundtrip.DEVIATION_NAME, 0.0, "m", Signal.GREEN, "", details)
+
+
+def crafted(*bend, rest=(0.0, 0.0, 0.0)):
+    """休みの姿勢（ずれ rest）とポーズ "bend"（ずれ bend）の、手で作った結果。頂点は並びのまま 0・1・2"""
+    return [deviation_result("rest", [0, 1, 2], rest), deviation_result("bend", [0, 1, 2], bend)]
+
+
+class LimitedVerticesTest(unittest.TestCase):
+    def test_counts_deform_bones_over_four(self):
+        np.testing.assert_array_equal(limited_vertices(SOURCE_WEIGHTS["Body"], deform=DEFORM), [1])
+        self.assertEqual(limited_vertices(SOURCE_WEIGHTS["Body"], deform=DEFORM).dtype, np.int64)
+
+    def test_non_deform_bone_is_not_counted(self):
+        """形を動かさない骨（IK の骨など）の重みは、convert_blend.py も見ない。数えれば4本"""
+        deform = DEFORM.copy()
+        deform[4] = False
+        np.testing.assert_array_equal(limited_vertices(SOURCE_WEIGHTS["Body"], deform=deform), [])
+        np.testing.assert_array_equal(limited_vertices(SOURCE_WEIGHTS["Body"]), [1])  # None なら全部の骨
+
+    def test_tiny_weight_is_counted_like_the_converter(self):
+        """convert_blend.py は重みが 0 より大きい骨を全部数える。WEIGHT_EPSILON より小さい5本目でも、4本にされる"""
+        tiny = thresholds.WEIGHT_EPSILON / 10.0
+        table = WeightTable.from_lists([[(0, 0.4), (1, 0.3), (2, 0.2), (3, 0.1), (4, tiny)], [(0, 1.0), (1, 0.0)]])
+        np.testing.assert_array_equal(limited_vertices(table, deform=np.ones(5, dtype=bool)), [0])
+
+    def test_limit_and_errors(self):
+        np.testing.assert_array_equal(limited_vertices(SOURCE_WEIGHTS["Body"], limit=1), [1, 2])
+        for bad in (0, True, 1.5):
+            with self.subTest(limit=bad), self.assertRaises(ValueError):
+                limited_vertices(SOURCE_WEIGHTS["Body"], limit=bad)
+        with self.assertRaises(ValueError):
+            limited_vertices(np.zeros((3, 5)))
+        with self.assertRaises(ValueError):
+            limited_vertices(SOURCE_WEIGHTS["Body"], deform=np.ones(3, dtype=bool))  # 骨の番号 5 に足りない
+
+
+class InfluenceLimitTest(unittest.TestCase):
+    def check(self, results, weights=None, **options):
+        result = check_influence_limit(results, SOURCE_WEIGHTS if weights is None else weights, deform=DEFORM,
+                                       **options)
+        self.assertEqual((result.name, result.unit), (roundtrip.INFLUENCE_EFFECT_NAME, "m"))
+        return result
+
+    def test_small_change_is_yellow(self):
+        """5本の頂点のずれが 0.02mm：基準（0.5mm）より小さくても、再現性の幅（0.01mm）を超えれば黄（ユーザーと決めた）。
+        形のずれ（roundtrip_deviation）は、いままでどおり基準だけで決める（緑のまま）"""
+        results = limit_results({"bend": {1: 0.00002}})
+        self.assertEqual(results[1].signal, Signal.GREEN)
+        result = self.check(results)
+        self.assertEqual(result.signal, Signal.YELLOW)
+        self.assertAlmostEqual(result.value, 0.00002, places=12)
+        self.assertTrue(result.reason)
+        body = result.details["meshes"]["Body"]
+        np.testing.assert_array_equal(body["limited"], [1])
+        np.testing.assert_allclose(body["deviations"], [0.00002], atol=1e-12)
+        self.assertEqual(body["worst_pose"], ("bend",))
+        self.assertLess(float(body["poses"]["rest"][0]), 1e-12)
+        np.testing.assert_allclose(body["poses"]["bend"], [0.00002], atol=1e-12)
+        np.testing.assert_array_equal(body["unmeasured"], [])
+        self.assertEqual(result.details["poses"], ("rest", "bend"))
+        self.assertEqual((result.details["limited_count"], result.details["changed_count"],
+                          result.details["over_limit_count"], result.details["unmeasured_count"]), (1, 1, 0, 0))
+        self.assertEqual([(w["mesh"], w["source_index"], w["pose"]) for w in result.details["worst"]],
+                         [("Body", 1, "bend")])
+
+    def test_over_limit_is_red(self):
+        results = limit_results({"bend": {1: 0.0006}})
+        self.assertEqual(results[1].signal, Signal.RED)
+        result = self.check(results)
+        self.assertEqual(result.signal, Signal.RED)
+        self.assertAlmostEqual(result.value, 0.0006, places=12)
+        self.assertEqual(result.details["over_limit_count"], 1)
+
+    def test_no_change_is_green(self):
+        result = self.check(limit_results())
+        self.assertEqual(result.signal, Signal.GREEN)
+        self.assertLess(result.value, 1e-12)
+        self.assertIn("再現性の幅", result.reason)
+        self.assertEqual(result.details["changed_count"], 0)
+
+    def test_no_limited_vertex_is_green_with_reason(self):
+        """4本を超える頂点が無ければ、ウェイトを数えて確かめたので緑（値 0）。ほかの頂点のずれは見ない"""
+        four = {"Body": WeightTable.from_lists([row[:4] for row in FIVE_ROWS])}
+        for results in (limit_results({"bend": {2: 0.0006}}), []):
+            with self.subTest(results=len(results)):
+                result = self.check(results, four)
+                self.assertEqual((result.signal, result.value, result.reason),
+                                 (Signal.GREEN, 0.0, "4本を超える頂点はありません"))
+                self.assertEqual(result.details["limited_count"], 0)
+                np.testing.assert_array_equal(result.details["meshes"]["Body"]["limited"], [])
+
+    def test_only_limited_vertices_are_looked_at(self):
+        """5本の頂点（1）が変わらなければ、ほかの頂点（2）が大きくずれても緑（そのずれは roundtrip_deviation の赤）"""
+        results = limit_results({"bend": {2: 0.0006}})
+        self.assertEqual(results[1].signal, Signal.RED)
+        result = self.check(results)
+        self.assertEqual(result.signal, Signal.GREEN)
+        self.assertLess(result.value, 1e-12)
+
+    def test_largest_over_rest_and_poses(self):
+        results = limit_results({"a": {1: 0.00002}, "b": {1: 0.00003}, "c": {0: 0.0001}}, poses=("a", "b", "c"))
+        result = self.check(results)
+        self.assertEqual(result.signal, Signal.YELLOW)
+        self.assertAlmostEqual(result.value, 0.00003, places=12)
+        body = result.details["meshes"]["Body"]
+        self.assertEqual(body["worst_pose"], ("b",))
+        self.assertEqual(list(body["poses"]), ["rest", "a", "b", "c"])
+        np.testing.assert_allclose([body["poses"][p][0] for p in ("a", "b")], [0.00002, 0.00003], atol=1e-12)
+        self.assertLess(float(body["poses"]["c"][0]), 1e-12)
+        # 休みの姿勢のずれも入れる（bindTransforms のずれなど）
+        model, source_rest, matches = rest_setup()
+        shifted = {"Body": REST_SKEL + np.array([[0.0, 0.0, 0.0], [0.00004, 0.0, 0.0], [0.0, 0.0, 0.0]])}
+        result = self.check([compare_rest(model, shifted, BIND, matches), *results[1:]])
+        self.assertAlmostEqual(result.value, 0.00004, places=12)
+        self.assertEqual(result.details["meshes"]["Body"]["worst_pose"], ("rest",))
+
+    def test_thresholds_at_the_boundary(self):
+        """再現性の幅ちょうどは緑（幅を超えたら黄）。基準ちょうどは赤（基準以上で赤）"""
+        cases = [(TOLERANCE, Signal.GREEN), (np.nextafter(TOLERANCE, 1.0), Signal.YELLOW),
+                 (np.nextafter(LIMIT, 0.0), Signal.YELLOW), (LIMIT, Signal.RED)]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                result = self.check(crafted(0.0, float(value), 0.0))
+                self.assertEqual((result.signal, result.value), (expected, float(value)))
+
+    def test_several_exported_points_take_the_largest(self):
+        """1つの元の頂点に2つの書き出した点が対応したら、大きいほうのずれ。どちらかが測れなければ、測れない"""
+        results = [deviation_result("rest", [0, 1, 1, 2], [0.0] * 4),
+                   deviation_result("bend", [0, 1, 1, 2], [0.0, 0.00003, 0.00002, 0.0])]
+        result = self.check(results)
+        self.assertEqual((result.signal, result.value), (Signal.YELLOW, 0.00003))
+        results[1] = deviation_result("bend", [0, 1, 1, 2], [0.0, 0.00003, np.nan, 0.0])
+        result = self.check(results)
+        self.assertEqual(result.signal, Signal.GRAY)
+        self.assertTrue(np.isnan(result.details["meshes"]["Body"]["poses"]["bend"][0]))
+
+    def test_hidden_vertex_is_not_counted(self):
+        """MASK で消える頂点は、convert_blend.py が4本にする前に消すので数えない（書き出されないので測れなくてもよい）"""
+        results = [deviation_result("rest", [0, 2], [0.0, 0.0]), deviation_result("bend", [0, 2], [0.0, 0.0006])]
+        hidden = {"Body": np.array([False, True, False])}
+        result = self.check(results, expected_missing=hidden)
+        self.assertEqual((result.signal, result.value), (Signal.GREEN, 0.0))
+        self.assertEqual(result.reason, "4本を超える頂点は、服で隠れて書き出されない物だけです")
+        np.testing.assert_array_equal(result.details["hidden_limited"]["Body"], [1])
+        self.assertEqual(result.details["limited_count"], 0)
+        # 消えない頂点なら、書き出されていないので測れない（灰）
+        self.assertEqual(self.check(results).signal, Signal.GRAY)
+
+    def test_unknown_joint_is_gray(self):
+        posed = POSED.copy()
+        posed[1] = np.nan  # arm の行列が分からない：頂点 0・1 は測れない
+        result = self.check(limit_results(posed=posed))
+        self.assertEqual(result.signal, Signal.GRAY)
+        self.assertLess(result.value, 1e-12)  # 休みの姿勢では測れた
+        body = result.details["meshes"]["Body"]
+        self.assertTrue(np.isnan(body["poses"]["bend"][0]))
+        np.testing.assert_array_equal(body["unmeasured"], [1])
+        self.assertEqual(result.details["unmeasured_count"], 1)
+        self.assertIn("測れなかった", result.reason)
+
+    def test_red_beats_gray(self):
+        """測れない頂点があっても、測れた頂点が基準以上なら赤（赤 > 灰）"""
+        rows = [FIVE_ROWS[1], FIVE_ROWS[1], FIVE_ROWS[1]]  # どの頂点も5本
+        posed = POSED.copy()
+        posed[1] = np.nan
+        results = limit_results({"bend": {2: 0.0006}}, posed=posed)
+        result = self.check(results, {"Body": WeightTable.from_lists(rows)})
+        self.assertEqual(result.signal, Signal.RED)
+        self.assertAlmostEqual(result.value, 0.0006, places=12)
+        np.testing.assert_array_equal(result.details["meshes"]["Body"]["unmeasured"], [0, 1])
+
+    def test_failed_pose_is_gray(self):
+        results = limit_results({"bend": {1: 0.00002}})
+        failed = Measurement.unmeasured(roundtrip.DEVIATION_NAME, "m", "ポーズの形を計算できませんでした", {"pose": "twist"})
+        result = self.check([*results, failed])
+        self.assertEqual(result.signal, Signal.GRAY)
+        self.assertAlmostEqual(result.value, 0.00002, places=12)
+        self.assertEqual(result.details["unmeasured_poses"], ("twist",))
+        self.assertEqual(result.details["poses"], ("rest", "bend"))
+
+    def test_pose_that_moved_nothing_is_gray(self):
+        result = self.check(crafted(0.0, 0.00002, 0.0) + [deviation_result("still", [0, 1, 2], [0.0] * 3, moved=0)])
+        self.assertEqual(result.signal, Signal.GRAY)
+        self.assertEqual(result.details["unexercised_poses"], ("still",))
+        result = self.check(crafted(0.0, 0.0006, 0.0) + [deviation_result("still", [0, 1, 2], [0.0] * 3, moved=0)])
+        self.assertEqual(result.signal, Signal.RED)
+
+    def test_rest_only_is_gray(self):
+        """休みの姿勢では、重みを変えても形は変わらない。ポーズで測っていなければ、確かめたことにしない"""
+        model, source_rest, matches = rest_setup()
+        result = self.check([compare_rest(model, source_rest, BIND, matches)])
+        self.assertEqual(result.signal, Signal.GRAY)
+        self.assertLess(result.value, 1e-12)
+        result = self.check([deviation_result("still", [0, 1, 2], [0.0] * 3, moved=0)])
+        self.assertEqual(result.signal, Signal.GRAY)
+
+    def test_nothing_measured_is_gray(self):
+        for results in ([], [deviation_result("bend", [0, 2], [0.0, 0.0])]):
+            with self.subTest(results=len(results)):
+                result = self.check(results)
+                self.assertEqual(result.signal, Signal.GRAY)
+                self.assertIsNone(result.value)
+
+    def test_unreadable_or_missing_meshes_are_gray(self):
+        result = self.check(limit_results(), {}, unmeasured={"Body": "読めません"})
+        self.assertEqual((result.signal, result.value), (Signal.GRAY, None))
+        self.assertEqual(result.details["unmeasured_meshes"], {"Body": "読めません"})
+        result = self.check(limit_results({"bend": {1: 0.00002}}), unmeasured={"Skirt": "読めません"})
+        self.assertEqual(result.signal, Signal.GRAY)
+        self.assertAlmostEqual(result.value, 0.00002, places=12)
+        result = self.check(limit_results(), {})  # 調べるメッシュが無い
+        self.assertEqual((result.signal, result.value), (Signal.GRAY, None))
+
+    def test_worst_list_across_meshes(self):
+        skirt = WeightTable.from_lists([FIVE_ROWS[1], FIVE_ROWS[0]])
+        results = crafted(0.0, 0.00002, 0.0)
+        results[1].details["meshes"]["/root/Arm/Skirt/Skirt"] = {
+            "source_name": "Skirt", "source_index": np.array([0, 1]), "deviations": np.array([0.00004, 0.0])}
+        results[0].details["meshes"]["/root/Arm/Skirt/Skirt"] = {
+            "source_name": "Skirt", "source_index": np.array([0, 1]), "deviations": np.array([0.0, 0.0])}
+        result = self.check(results, {"Body": SOURCE_WEIGHTS["Body"], "Skirt": skirt})
+        self.assertEqual((result.signal, result.value), (Signal.YELLOW, 0.00004))
+        self.assertEqual([(w["mesh"], w["source_index"], w["deviation"]) for w in result.details["worst"]],
+                         [("Skirt", 0, 0.00004), ("Body", 1, 0.00002)])
+        self.assertEqual(result.details["limited_count"], 2)
+
+    def test_errors(self):
+        results = limit_results()
+        with self.assertRaises(ValueError):
+            self.check([*results, Measurement("max_bone_influences", 4.0, "count", Signal.GREEN)])
+        with self.assertRaises(ValueError):
+            self.check(results[0])  # 並びでなく1つ
+        with self.assertRaises(ValueError):
+            self.check([*results, results[1]])  # 同じポーズが2つ
+        with self.assertRaises(ValueError):
+            self.check([Measurement(roundtrip.DEVIATION_NAME, 0.0, "m", Signal.GREEN)])  # ポーズの名前が無い
+        with self.assertRaises(ValueError):
+            self.check(results, {"Body": np.zeros((3, 6))})
+        with self.assertRaises(ValueError):
+            self.check(results, expected_missing={"Body": np.zeros(2, dtype=bool)})
+        with self.assertRaises(ValueError):
+            self.check(results, unmeasured=["Body"])
+        with self.assertRaises(ValueError):
+            self.check([deviation_result("bend", [0, 1], [0.0, 0.0, 0.0])])
 
 
 # MARK: - 物理の部品
