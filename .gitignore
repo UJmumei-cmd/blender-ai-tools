@@ -35,3 +35,6 @@ dist/
 # 説明の画像だけは入れてよい
 !docs/**/*.png
 !docs/**/*.jpg
+
+# 手で試すための見本の置き場（tools/make_sample_model.sh の出力）
+samples/

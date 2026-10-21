@@ -216,7 +216,15 @@ def step() -> None:
 # MARK: - 登録とファイル
 
 
+def _data_ready() -> bool:
+    """bpy.data を読めるか。Blender の起動の途中で拡張機能が登録されるときは、まだ読めない（_RestrictData）。
+    そのときは、起動のファイルを読んだあとの on_load_post でつなぐ"""
+    return hasattr(bpy.data, "filepath")
+
+
 def register() -> None:
+    if not _data_ready():
+        return
     attach()
     state.refresh_versions()
 
