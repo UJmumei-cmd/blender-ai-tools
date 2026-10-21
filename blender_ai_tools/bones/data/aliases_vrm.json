@@ -1,0 +1,162 @@
+{
+  "_notes": [
+    "VRM のヒューマノイドの骨の名前（VRM 0.x と 1.0。アプリの character_rig.json の bones の名前も同じ）と、VRoid Studio の骨の名前を、共通の名前に対応させます。",
+    "親指は、VRM 0.x と 1.0 で名前の意味が違います。0.x：leftThumbProximal＝親指０、leftThumbIntermediate＝親指１、leftThumbDistal＝親指２。1.0：leftThumbMetacarpal＝親指０、leftThumbProximal＝親指１、leftThumbDistal＝親指２。",
+    "そのため、親指の名前は vrm0 と vrm1 の表に分けました（leftThumbDistal は同じなので vrm の表）。leftThumbProximal は1つの名前だけでは決まりません（lookup は None）。map_bones は、入力に leftThumbMetacarpal・rightThumbMetacarpal（1.0 だけの名前）があれば 1.0、leftThumbIntermediate・rightThumbIntermediate（0.x だけの名前）があれば 0.x として決めます。どちらも無い・両方あるときは決めず、ambiguous（ユーザーに聞く）にします。",
+    "upperChest と jaw は、準標準に対応する骨が無いので known_extras にしました。J_Bip_C_UpperChest も同じです。",
+    "VRoid の J_Sec_（揺れ物）・J_Adj_（調整。J_Adj_L_FaceEye/J_Adj_R_FaceEye は目なので除く）・J_Opt_ で始まる骨は known_extra_prefixes で known_extras にします。",
+    "つま先：VRM の toes・VRoid の ToeBase・Mixamo の ToeBase は指の付け根の骨で、MMD の「つま先」はつま先の先の骨です。位置は違いますが、ユーザーの確認のうえ、つま先に対応させます。脚の長さ（足 → つま先）を測るときは、その分の差が出ます。"
+  ],
+  "_sources": [
+    "VRM 0.x：vrm-c/vrm-specification（コミット 94e82dd3）specification/0.0/schema/vrm.humanoid.bone.schema.json の bone の enum。",
+    "VRM 1.0：同じリポジトリの specification/VRMC_vrm-1.0/schema/VRMC_vrm.humanoid.humanBones.schema.json の properties と humanoid.md。",
+    "VRoid：saturday06/VRM-Addon-for-Blender（コミット 10bf3e7e）src/io_scene_vrm/common/human_bone_mapper/vroid_mapping.py の表（J_Bip_L_Thumb1 は 1.0 の Metacarpal＝親指０）と、J_(Adj|Bip|Opt|Sec) の前置き。",
+    "VRM → 準標準の対応（hips＝センター、spine＝上半身、chest＝上半身2、hand＝手首、toes＝つま先 など）は、A3 の作業の指示で決めたものです。hips は、紅魔館の convert_pmx.py の HUMAN_BONES（hips ← センター・グルーブ・下半身）に合わせてセンターにしました。VRM の hips は上半身と脚の両方の親で、体全体を動かす骨なので、脚の側だけを動かす下半身ではなく、センターに当たります。"
+  ],
+  "tables": {
+    "vrm": {
+      "description": "VRM 0.x と 1.0 で同じ意味の、ヒューマノイドの骨の名前",
+      "aliases": {
+        "hips": "センター",
+        "spine": "上半身",
+        "chest": "上半身2",
+        "neck": "首",
+        "head": "頭",
+        "leftShoulder": "左肩",
+        "leftUpperArm": "左腕",
+        "leftLowerArm": "左ひじ",
+        "leftHand": "左手首",
+        "leftUpperLeg": "左足",
+        "leftLowerLeg": "左ひざ",
+        "leftFoot": "左足首",
+        "leftToes": "左つま先",
+        "leftEye": "左目",
+        "leftThumbDistal": "左親指２",
+        "leftIndexProximal": "左人指１",
+        "leftIndexIntermediate": "左人指２",
+        "leftIndexDistal": "左人指３",
+        "leftMiddleProximal": "左中指１",
+        "leftMiddleIntermediate": "左中指２",
+        "leftMiddleDistal": "左中指３",
+        "leftRingProximal": "左薬指１",
+        "leftRingIntermediate": "左薬指２",
+        "leftRingDistal": "左薬指３",
+        "leftLittleProximal": "左小指１",
+        "leftLittleIntermediate": "左小指２",
+        "leftLittleDistal": "左小指３",
+        "rightShoulder": "右肩",
+        "rightUpperArm": "右腕",
+        "rightLowerArm": "右ひじ",
+        "rightHand": "右手首",
+        "rightUpperLeg": "右足",
+        "rightLowerLeg": "右ひざ",
+        "rightFoot": "右足首",
+        "rightToes": "右つま先",
+        "rightEye": "右目",
+        "rightThumbDistal": "右親指２",
+        "rightIndexProximal": "右人指１",
+        "rightIndexIntermediate": "右人指２",
+        "rightIndexDistal": "右人指３",
+        "rightMiddleProximal": "右中指１",
+        "rightMiddleIntermediate": "右中指２",
+        "rightMiddleDistal": "右中指３",
+        "rightRingProximal": "右薬指１",
+        "rightRingIntermediate": "右薬指２",
+        "rightRingDistal": "右薬指３",
+        "rightLittleProximal": "右小指１",
+        "rightLittleIntermediate": "右小指２",
+        "rightLittleDistal": "右小指３"
+      },
+      "known_extras": [
+        "upperChest",
+        "jaw"
+      ]
+    },
+    "vrm0": {
+      "description": "VRM 0.x の親指",
+      "aliases": {
+        "leftThumbProximal": "左親指０",
+        "leftThumbIntermediate": "左親指１",
+        "rightThumbProximal": "右親指０",
+        "rightThumbIntermediate": "右親指１"
+      },
+      "known_extras": []
+    },
+    "vrm1": {
+      "description": "VRM 1.0 の親指",
+      "aliases": {
+        "leftThumbMetacarpal": "左親指０",
+        "leftThumbProximal": "左親指１",
+        "rightThumbMetacarpal": "右親指０",
+        "rightThumbProximal": "右親指１"
+      },
+      "known_extras": []
+    },
+    "vroid": {
+      "description": "VRoid Studio の骨の名前",
+      "aliases": {
+        "J_Bip_C_Hips": "センター",
+        "J_Bip_C_Spine": "上半身",
+        "J_Bip_C_Chest": "上半身2",
+        "J_Bip_C_Neck": "首",
+        "J_Bip_C_Head": "頭",
+        "J_Bip_L_Shoulder": "左肩",
+        "J_Bip_L_UpperArm": "左腕",
+        "J_Bip_L_LowerArm": "左ひじ",
+        "J_Bip_L_Hand": "左手首",
+        "J_Bip_L_Thumb1": "左親指０",
+        "J_Bip_L_Thumb2": "左親指１",
+        "J_Bip_L_Thumb3": "左親指２",
+        "J_Bip_L_Index1": "左人指１",
+        "J_Bip_L_Index2": "左人指２",
+        "J_Bip_L_Index3": "左人指３",
+        "J_Bip_L_Middle1": "左中指１",
+        "J_Bip_L_Middle2": "左中指２",
+        "J_Bip_L_Middle3": "左中指３",
+        "J_Bip_L_Ring1": "左薬指１",
+        "J_Bip_L_Ring2": "左薬指２",
+        "J_Bip_L_Ring3": "左薬指３",
+        "J_Bip_L_Little1": "左小指１",
+        "J_Bip_L_Little2": "左小指２",
+        "J_Bip_L_Little3": "左小指３",
+        "J_Bip_L_UpperLeg": "左足",
+        "J_Bip_L_LowerLeg": "左ひざ",
+        "J_Bip_L_Foot": "左足首",
+        "J_Bip_L_ToeBase": "左つま先",
+        "J_Adj_L_FaceEye": "左目",
+        "J_Bip_R_Shoulder": "右肩",
+        "J_Bip_R_UpperArm": "右腕",
+        "J_Bip_R_LowerArm": "右ひじ",
+        "J_Bip_R_Hand": "右手首",
+        "J_Bip_R_Thumb1": "右親指０",
+        "J_Bip_R_Thumb2": "右親指１",
+        "J_Bip_R_Thumb3": "右親指２",
+        "J_Bip_R_Index1": "右人指１",
+        "J_Bip_R_Index2": "右人指２",
+        "J_Bip_R_Index3": "右人指３",
+        "J_Bip_R_Middle1": "右中指１",
+        "J_Bip_R_Middle2": "右中指２",
+        "J_Bip_R_Middle3": "右中指３",
+        "J_Bip_R_Ring1": "右薬指１",
+        "J_Bip_R_Ring2": "右薬指２",
+        "J_Bip_R_Ring3": "右薬指３",
+        "J_Bip_R_Little1": "右小指１",
+        "J_Bip_R_Little2": "右小指２",
+        "J_Bip_R_Little3": "右小指３",
+        "J_Bip_R_UpperLeg": "右足",
+        "J_Bip_R_LowerLeg": "右ひざ",
+        "J_Bip_R_Foot": "右足首",
+        "J_Bip_R_ToeBase": "右つま先",
+        "J_Adj_R_FaceEye": "右目"
+      },
+      "known_extras": [
+        "J_Bip_C_UpperChest"
+      ],
+      "known_extra_prefixes": [
+        "J_Sec_",
+        "J_Adj_",
+        "J_Opt_"
+      ]
+    }
+  }
+}

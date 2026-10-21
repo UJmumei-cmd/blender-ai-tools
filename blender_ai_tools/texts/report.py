@@ -1,0 +1,127 @@
+"""信号の報告（A11）の文。キー → {"ja": 日本語, "en": 英語}。数字などは {name} の形で入れる"""
+
+TEXTS: dict[str, dict[str, str]] = {
+    "report.title": {"ja": "点検の報告", "en": "Check report"},
+    "report.generated_at": {"ja": "作った時刻：{time}", "en": "Created: {time}"},
+    "report.kind": {"ja": "点検：{kind}", "en": "Check: {kind}"},
+    # いちばん上の一言
+    "report.headline_red": {
+        "ja": "赤が {red} 件あります（黄 {yellow} 件、測れなかった物 {gray} 件）",
+        "en": "{red} red (yellow {yellow}, not measured {gray})",
+    },
+    "report.headline_gray": {
+        "ja": "赤はありません。測れなかった物が {gray} 件あります（黄 {yellow} 件）",
+        "en": "No red. {gray} could not be measured (yellow {yellow})",
+    },
+    "report.headline_yellow": {"ja": "大丈夫です（黄 {yellow} 件）", "en": "OK (yellow {yellow})"},
+    "report.headline_ok": {"ja": "大丈夫です", "en": "OK"},
+    "report.headline_accepted": {
+        "ja": "「このままでよい」とした物 {accepted} 件",
+        "en": "{accepted} marked as acceptable",
+    },
+    "report.headline_empty": {"ja": "点検の結果がありません", "en": "No check results"},
+    # 表の見出し
+    "report.column_group": {"ja": "まとまり", "en": "Group"},
+    "report.column_title": {"ja": "項目", "en": "Item"},
+    "report.column_signal": {"ja": "信号", "en": "Signal"},
+    "report.column_value": {"ja": "値", "en": "Value"},
+    "report.column_reason": {"ja": "理由", "en": "Reason"},
+    "report.column_decision": {"ja": "どうするか", "en": "Decision"},
+    "report.details": {"ja": "細かい値", "en": "Details"},
+    # 信号
+    "report.signal_green": {"ja": "緑", "en": "Green"},
+    "report.signal_yellow": {"ja": "黄", "en": "Yellow"},
+    "report.signal_gray": {"ja": "灰（測れなかった）", "en": "Gray (not measured)"},
+    "report.signal_red": {"ja": "赤", "en": "Red"},
+    # ユーザーの答え
+    "report.decision_fix": {"ja": "直す（おすすめ）", "en": "Fix (recommended)"},
+    "report.decision_accept": {"ja": "このままでよい", "en": "Leave as is"},
+    "report.decision_later": {"ja": "あとで", "en": "Later"},
+    "report.decision_none": {"ja": "まだ決めていない", "en": "Undecided"},
+    "report.decision_note": {"ja": "メモ：{note}", "en": "Note: {note}"},
+    # 値
+    "report.value_mm": {"ja": "{value} mm", "en": "{value} mm"},
+    "report.value_deg": {"ja": "{value} 度", "en": "{value}°"},
+    "report.value_count": {"ja": "{value} 件", "en": "{value}"},
+    "report.value_other": {"ja": "{value} {unit}", "en": "{value} {unit}"},
+    "report.value_none": {"ja": "値なし", "en": "no value"},
+    # 前の版との比べ（数は記録し、次の版で増えたら赤）
+    "report.baseline_first": {
+        "ja": "前の版の赤の数の記録がありません（今回の {current} 件を基準として記録します）",
+        "en": "No previous red count recorded (recording {current} as the baseline)",
+    },
+    "report.baseline_increase": {
+        "ja": "赤が {previous} 件から {current} 件に増えました",
+        "en": "Red increased from {previous} to {current}",
+    },
+    "report.baseline_ok": {
+        "ja": "赤は {current} 件（前の版は {previous} 件）",
+        "en": "{current} red (previous version: {previous})",
+    },
+    # 項目の名前（測った結果の名前 → 文）。無い名前は、そのまま出す
+    "report.course_item": {"ja": "{pose}：{check}", "en": "{pose}: {check}"},
+    "report.item_penetration_depth": {"ja": "めり込みの深さ", "en": "Penetration depth"},
+    "report.item_visible_penetration": {"ja": "見えるめり込み", "en": "Visible penetration"},
+    "report.item_visible_points": {"ja": "見える問題の点", "en": "Visible problem points"},
+    "report.item_cloth_gap": {"ja": "服と体のすき間", "en": "Cloth to body gap"},
+    "report.item_asymmetry": {"ja": "左右のずれ", "en": "Left-right asymmetry"},
+    "report.item_duplicate_vertices": {"ja": "重なった点", "en": "Overlapping vertices"},
+    "report.item_degenerate_triangles": {"ja": "面積 0 の面", "en": "Zero-area faces"},
+    "report.item_non_manifold_edges": {"ja": "3つ以上の面がつく辺", "en": "Edges shared by 3+ faces"},
+    "report.item_inconsistent_edges": {"ja": "向きがそろわない面", "en": "Inconsistently oriented faces"},
+    "report.item_holes": {"ja": "穴", "en": "Holes"},
+    "report.item_loose_parts": {"ja": "小さな離れた部品", "en": "Small loose parts"},
+    "report.item_unexpected_changes": {"ja": "変えてよい所の外の変化", "en": "Changes outside the allowed places"},
+    "report.item_edge_stretch": {"ja": "面の伸び", "en": "Face stretch"},
+    "report.item_flipped_faces": {"ja": "裏返った面", "en": "Flipped faces"},
+    "report.item_volume_loss": {"ja": "体積の減り", "en": "Volume loss"},
+    "report.item_spike": {"ja": "とげ", "en": "Spikes"},
+    "report.item_bone_influences_over_limit": {"ja": "1点に付く骨が多すぎる", "en": "Too many bones per vertex"},
+    "report.item_unweighted_vertices": {"ja": "どの骨にも付いていない点", "en": "Unweighted vertices"},
+    "report.item_weights_not_normalized": {"ja": "合計が 1 でないウェイト", "en": "Weights not summing to 1"},
+    "report.item_duplicate_bone_ids": {"ja": "同じ骨が2回入っている点", "en": "Vertices with the same bone twice"},
+    "report.item_negative_weights": {"ja": "負のウェイト", "en": "Negative weights"},
+    "report.item_reverse_bend": {"ja": "ひざ・ひじの逆曲がり", "en": "Reverse knee/elbow bend"},
+    "report.item_floor_sink": {"ja": "床への沈み", "en": "Sinking into the floor"},
+    "report.item_foot_slide": {"ja": "足すべり", "en": "Foot sliding"},
+    "report.item_floor_glide": {"ja": "床の上のすべり", "en": "Gliding along the floor"},
+    "report.item_unreachable_frames": {"ja": "届かないフレーム", "en": "Unreachable frames"},
+    "report.item_bone_jumps": {"ja": "骨の跳び", "en": "Bone jumps"},
+    "report.item_pose_course": {"ja": "確かめの動き（全部）", "en": "Pose course (all)"},
+    "report.item_roundtrip_deviation": {"ja": "読み戻した形のずれ", "en": "Round-trip shape deviation"},
+    "report.item_roundtrip_coverage": {"ja": "読み戻しの対応", "en": "Round-trip coverage"},
+    "report.item_skeleton_rest_consistency": {"ja": "骨格の休みの姿勢の一致", "en": "Skeleton rest consistency"},
+    "report.item_joint_names": {"ja": "骨の名前の対応", "en": "Joint names"},
+    "report.item_humanoid_bones": {"ja": "アプリのヒューマノイドの骨", "en": "App humanoid bones"},
+    "report.item_shape_key_names": {"ja": "表情の名前の対応", "en": "Shape key names"},
+    "report.item_max_bone_influences": {"ja": "1点に付く骨の数（書き出し）", "en": "Bones per vertex (export)"},
+    "report.item_joint_weight_sums": {"ja": "ウェイトの合計（書き出し）", "en": "Weight sums (export)"},
+    "report.item_influence_limit_effect": {"ja": "4本に絞った影響", "en": "Effect of the 4-bone limit"},
+    "report.item_physics_parts": {"ja": "物理の部品", "en": "Physics parts"},
+    "report.item_red_count_change": {"ja": "赤の数の前の版との比べ", "en": "Red count vs previous version"},
+    # MARK: - 道具の結果から作る報告（report/sources.py）
+    # 点検の種類の名前（Report.kind）
+    "report.kind_label_export": {"ja": "書き出して確かめる", "en": "Export and check"},
+    "report.kind_label_pose_course": {"ja": "確かめの動き", "en": "Pose course"},
+    "report.kind_label_versions": {"ja": "前の版との比べ", "en": "Comparison with the previous version"},
+    # E1 書き出し
+    "report.item_convert": {"ja": "書き出し（convert_blend.py）", "en": "Export (convert_blend.py)"},
+    "report.convert_ok": {"ja": "書き出せました", "en": "Exported"},
+    "report.convert_no_detail": {
+        "ja": "書き出しに問題がありました（くわしい理由はありません）",
+        "en": "The export had a problem (no details were given)",
+    },
+    # E2 往復の確認：ポーズごとの形のずれ
+    "report.roundtrip_pose_item": {"ja": "読み戻した形のずれ：{pose}", "en": "Round-trip shape deviation: {pose}"},
+    "report.export_pose_rest": {"ja": "休みの姿勢", "en": "Rest pose"},
+    "report.export_pose_arms_up": {"ja": "腕を上げる", "en": "Arms up"},
+    "report.export_pose_elbows": {"ja": "ひじを曲げる", "en": "Elbows bent"},
+    "report.export_pose_knees": {"ja": "ひざを曲げる", "en": "Knees bent"},
+    "report.export_pose_twist": {"ja": "体をひねる", "en": "Body twist"},
+    # A6 前の版との比べ
+    "report.versions_outside": {
+        "ja": "変えてよい所の外の変化です（変える前に、変えてよい所を決めてください）",
+        "en": "This change is outside the allowed changes (decide the allowed changes before changing)",
+    },
+    "report.versions_allowed": {"ja": "変えてよい所の中の変化です", "en": "This change is inside the allowed changes"},
+}
