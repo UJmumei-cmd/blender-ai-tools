@@ -6,6 +6,7 @@
 """
 
 import hashlib
+import json
 import os
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ import numpy as np
 import blender_ai_tools
 from blender_ai_tools import registry, texts, ui
 from blender_ai_tools.catalog import Catalog
+from blender_ai_tools.measure.results import Signal
 from blender_ai_tools.model import card_bpy
 from blender_ai_tools.model.card import HEIGHT, card_text
 from blender_ai_tools.texts import text
@@ -148,6 +150,28 @@ class UiCase(unittest.TestCase):
         holder = bpy.data.texts.get(card_bpy.TEXT_NAME)
         return None if holder is None else holder.as_string()
 
+    def replace_card_json(self, content: str):
+        """カードのテキストの中身を置きかえる（読めない物・古い形の物を作るため）"""
+        holder = bpy.data.texts[card_bpy.TEXT_NAME]
+        holder.clear()
+        holder.write(content)
+
+    def make_card_legacy(self):
+        """置いてあるカード（版 2）を、版 1（世界の座標。読めるだけで変えられない）の形に書きかえる"""
+        data = json.loads(self.card_json())
+        for key in ("placement", "skeleton", "bone_answers"):
+            data.pop(key)
+        data["schema_version"] = 1
+        for part in data["parts"]:
+            part.pop("materials")
+        measurements = data["measurements"]
+        measurements["space"] = "world"
+        measurements["mesh_z_range"] = measurements.pop("mesh_up_range")
+        measurements.pop("material_up_range")
+        measurements.pop("excluded_materials")
+        self.replace_card_json(json.dumps(data, ensure_ascii=False))
+        self.assertTrue(self.card().is_legacy)
+
     def edit_armature(self, change):
         """エディットモードで骨を変えて、オブジェクトモードに戻す"""
         bpy.context.view_layer.objects.active = self.armature
@@ -245,16 +269,43 @@ class RegistrationTest(unittest.TestCase):
         self.assertEqual(preferences.AIToolsPreferences.bl_idname, blender_ai_tools.__name__)
 
     def test_register_sets_language_and_unregister_restores_it(self):
-        expected = preferences.resolve_language("auto", preferences.blender_locale())
-        for before in ("ja", "en"):
-            with self.subTest(before=before):
-                texts.set_language(before)
+        """初めの言語は日本語（CLAUDE.md：画面は日本語）。Blender が英語でも、設定を変えていなければ日本語になる"""
+        self.assertEqual(preferences.LANGUAGE_DEFAULT, "ja")
+        self.assertEqual(preferences.DEFAULTS.language, "ja")
+        self.assertEqual(preferences.LANGUAGE_CHOICES, ("auto", "ja", "en"))
+        with mock.patch.object(preferences, "blender_locale", return_value="en_US"):
+            for before in ("ja", "en"):
+                with self.subTest(before=before):
+                    texts.set_language(before)
+                    blender_ai_tools.register()
+                    try:
+                        self.assertEqual(texts.current_language(), "ja")
+                        self.assertEqual(bpy.types.VIEW3D_PT_ai_tools.bl_category, "AI の道具")
+                        self.assertEqual(preferences.AIToolsPreferences.bl_rna.properties["language"].default, "ja")
+                    finally:
+                        blender_ai_tools.unregister()
+                    self.assertEqual(texts.current_language(), before)
+
+    def test_register_failure_is_undone(self):
+        """登録の途中で失敗したら、登録した物を全部外し、言語も戻してから、エラーをそのまま出す"""
+        texts.set_language("en")
+        with mock.patch.object(panel.VIEW3D_PT_ai_tools_next, "localize", side_effect=RuntimeError("こわれた")):
+            with self.assertRaisesRegex(RuntimeError, "こわれた"):
                 blender_ai_tools.register()
-                try:
-                    self.assertEqual(texts.current_language(), expected)
-                finally:
-                    blender_ai_tools.unregister()
-                self.assertEqual(texts.current_language(), before)
+        self.assert_registered(False)
+        self.assertFalse(ui.is_registered())
+        self.assertEqual(texts.current_language(), "en")
+        # 直したあとは、ふつうに登録できる
+        blender_ai_tools.register()
+        try:
+            self.assert_registered(True)
+        finally:
+            blender_ai_tools.unregister()
+
+    def test_unregister_without_register_is_harmless(self):
+        blender_ai_tools.unregister()
+        blender_ai_tools.unregister()
+        self.assert_registered(False)
 
     def test_language_switch_renames_panels_and_operators(self):
         blender_ai_tools.register()
@@ -298,7 +349,7 @@ class RegistrationTest(unittest.TestCase):
         values = preferences.get_preferences()
         self.assertIsInstance(values, preferences.PreferenceValues)
         self.assertEqual((values.koumakan_repo, values.blender_path, values.work_dir, values.language),
-                         ("", "", "", "auto"))
+                         ("", "", "", "ja"))
         self.assertIsNone(preferences.koumakan_repo_path(values))
         self.assertEqual(preferences.blender_executable(values), bpy.app.binary_path)
         self.assertEqual(preferences.work_dir_path(values, "/models/miku/model.blend"),
@@ -311,6 +362,23 @@ class RegistrationTest(unittest.TestCase):
         self.assertEqual(preferences.blender_executable(chosen), "/apps/blender")
         self.assertEqual(preferences.work_dir_path(chosen, "/models/model.blend"), Path("/work/here"))
 
+    def test_blender_executable_accepts_a_mac_app_bundle(self):
+        """Mac で Blender.app（フォルダ）を選んだときは、その中の動かすファイルにする。ほかはそのまま"""
+        with tempfile.TemporaryDirectory() as folder:
+            app = Path(folder, "Blender.app")
+            binary = app / "Contents" / "MacOS" / "Blender"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"")
+            self.assertEqual(preferences.blender_executable(preferences.PreferenceValues(blender_path=str(app))),
+                             str(binary))
+            self.assertEqual(preferences.blender_executable(preferences.PreferenceValues(blender_path=str(binary))),
+                             str(binary))
+            # 中身の無い .app はそのまま（あとで「見つからない」と言われる）
+            empty = Path(folder, "Other.app")
+            empty.mkdir()
+            self.assertEqual(preferences.blender_executable(preferences.PreferenceValues(blender_path=str(empty))),
+                             str(empty))
+
     def test_preferences_when_enabled(self):
         """設定から有効にしたとき：言語を変えるとすぐに文が変わり、登録し直しても設定の値は残る"""
         addon = bpy.context.preferences.addons.new()
@@ -320,11 +388,18 @@ class RegistrationTest(unittest.TestCase):
         self.addCleanup(blender_ai_tools.unregister)
         prefs = preferences.get_preferences()
         self.assertIsInstance(prefs, preferences.AIToolsPreferences)
-        self.assertEqual(prefs.language, "auto")
-        prefs.language = "ja"
+        self.assertEqual(prefs.language, "ja")
         self.assertEqual(texts.current_language(), "ja")
         self.assertEqual(bpy.types.VIEW3D_PT_ai_tools.bl_category, "AI の道具")
-        prefs.language = "en"
+        with mock.patch.object(preferences, "blender_locale", return_value="en_US"):
+            prefs.language = "auto"  # Blender に合わせる：Blender が英語なら英語
+            self.assertEqual(texts.current_language(), "en")
+            self.assertEqual(bpy.types.VIEW3D_PT_ai_tools.bl_category, "AI Tools")
+        with mock.patch.object(preferences, "blender_locale", return_value="ja_JP"):
+            prefs.language = "ja"
+            self.assertEqual(texts.current_language(), "ja")
+            self.assertEqual(bpy.types.VIEW3D_PT_ai_tools.bl_category, "AI の道具")
+            prefs.language = "en"  # 選んだ言語は、Blender の言語より強い
         self.assertEqual(texts.current_language(), "en")
         self.assertEqual(bpy.types.VIEW3D_PT_ai_tools.bl_category, "AI Tools")
         prefs.koumakan_repo = "/repo/koumakan"
@@ -827,6 +902,158 @@ class PanelDrawTest(UiCase):
         log = draw(panel.VIEW3D_PT_ai_tools_bones)
         self.assertEqual(len(calls_of(log, "ai_tools.answer_bone")), panel.MAX_LISTED_ROWS * 2)
         self.assertIn("ほか 5 件（上から決めると、ここに出てきます）", label_texts(log))
+
+    def test_long_parts_list_moves_decided_rows_down(self):
+        """部品と材質が一覧の上限より多いとき：決めた物は後ろに回り、まだ決めていない物が上から出てくる
+        （出てこない行があると、その材質の種類を決められない）"""
+        skirt = bpy.data.objects[mmd_model.SKIRT_NAME]
+        names = [f"M{index:02d}" for index in range(panel.MAX_LISTED_ROWS + 5)]
+        for name in names:
+            skirt.data.materials.append(bpy.data.materials.new(name))
+        for polygon in skirt.data.polygons:
+            polygon.material_index = polygon.index % len(names)
+        bpy.context.view_layer.update()
+        bpy.ops.ai_tools.register_card()
+        total = 2 + len(names)  # Body・Skirt と、Skirt の材質
+
+        def shown_rows():
+            log = draw(panel.VIEW3D_PT_ai_tools_model)
+            rows = [(c["props"].object_name, c["props"].material_name)
+                    for c in calls_of(log, "ai_tools.set_part_kind", "menu_enum")]
+            self.assertEqual(len(rows), panel.MAX_LISTED_ROWS)
+            self.assertIn(f"ほか {total - panel.MAX_LISTED_ROWS} 件（上から決めると、ここに出てきます）", label_texts(log))
+            return rows
+
+        rows = shown_rows()
+        self.assertEqual(rows[:2], [("Body", ""), ("Skirt", "")])
+        self.assertEqual(rows[2:], [("Skirt", name) for name in names[:panel.MAX_LISTED_ROWS - 2]])
+        decided = names[:10]
+        for name in decided:
+            bpy.ops.ai_tools.set_part_kind(object_name=mmd_model.SKIRT_NAME, material_name=name, kind="accessory")
+        rows = shown_rows()
+        undecided = [name for name in names if name not in decided]
+        # まだ決めていない材質は全部出る。隠れるのは、決めた材質だけ
+        self.assertEqual(rows[:2 + len(undecided)], [("Body", ""), ("Skirt", "")] + [("Skirt", n) for n in undecided])
+        self.assertTrue(all(material in decided for _, material in rows[2 + len(undecided):]))
+        # 全部決めたら、カードの順に戻る（決めた物を後ろに回すのは、入らないときだけ）
+        bpy.ops.ai_tools.set_part_kind(object_name=mmd_model.BODY_NAME, kind="body")
+        bpy.ops.ai_tools.set_cloth_type(object_name=mmd_model.SKIRT_NAME, cloth_type="skirt")
+        for name in undecided:
+            bpy.ops.ai_tools.set_part_kind(object_name=mmd_model.SKIRT_NAME, material_name=name, kind="cloth")
+            bpy.ops.ai_tools.set_cloth_type(object_name=mmd_model.SKIRT_NAME, material_name=name, cloth_type="skirt")
+        rows = shown_rows()
+        self.assertEqual(rows, [("Body", ""), ("Skirt", "")] + [("Skirt", n) for n in names[:panel.MAX_LISTED_ROWS - 2]])
+
+    def test_legacy_card_is_shown_read_only(self):
+        """版 1 の古いカード：読めるだけ。種類の一覧も答えのボタンも出さず、「登録する」をすすめる"""
+        bpy.ops.ai_tools.register_card()
+        self.make_card_legacy()
+        logs = self.draw_all()
+        model = logs["VIEW3D_PT_ai_tools_model"]
+        lines = label_texts(model)
+        self.assertIn("古い形の登録カードです。「登録する」で、もう一度登録してください", lines)
+        self.assertIn("背の高さ：1450.0 mm", lines)
+        self.assertIn("体（推測）", lines)
+        self.assertEqual([c for c in model if c["kind"] == "menu_enum"], [])
+        bones = logs["VIEW3D_PT_ai_tools_bones"]
+        self.assertIn("古い形の登録カードです。「登録する」で、もう一度登録してください", label_texts(bones))
+        self.assertEqual(calls_of(bones, "ai_tools.answer_bone"), [])
+        self.assertEqual(state.card_view().questions, ())
+        # 確かめると「古い形なので測り直す」の理由が出る。変える操作は断る
+        self.assertEqual(bpy.ops.ai_tools.check_card(), {"FINISHED"})
+        lines = label_texts(draw(panel.VIEW3D_PT_ai_tools_model))
+        self.assertIn(card_text("card.legacy_card", version="1"), lines)
+        self.assertIn("【灰】測り直しが要る理由：1 個", lines)
+        before = self.card_json()
+        message = "古い形の登録カードは変えられません。先に「登録する」で、もう一度登録してください"
+        with self.assertRaisesRegex(RuntimeError, message):
+            bpy.ops.ai_tools.set_part_kind(object_name=mmd_model.BODY_NAME, kind="body")
+        with self.assertRaisesRegex(RuntimeError, message):
+            bpy.ops.ai_tools.answer_bone(bone_name="左腕", answer="extra")
+        self.assertEqual(self.card_json(), before)
+        # 「登録する」で、いまの形のカードになる
+        self.assertEqual(bpy.ops.ai_tools.register_card(), {"FINISHED"})
+        self.assertFalse(self.card().is_legacy)
+
+    def test_unreadable_card_is_shown(self):
+        bpy.ops.ai_tools.register_card()
+        self.replace_card_json("{not json")
+        logs = self.draw_all()
+        for name in ("VIEW3D_PT_ai_tools_model", "VIEW3D_PT_ai_tools_bones"):
+            with self.subTest(panel=name):
+                lines = label_texts(logs[name])
+                self.assertTrue(any(line.startswith("登録カードが読めません：") for line in lines), lines)
+        self.assertEqual([c for c in logs["VIEW3D_PT_ai_tools_model"] if c["kind"] == "menu_enum"], [])
+        self.assertEqual(bpy.ops.ai_tools.check_card(), {"CANCELLED"})
+        with self.assertRaisesRegex(RuntimeError, "登録カードを変えられませんでした：カードの JSON が読めません"):
+            bpy.ops.ai_tools.set_part_kind(object_name=mmd_model.BODY_NAME, kind="body")
+        self.assertEqual(self.card_json(), "{not json")
+
+    def test_unmeasured_height_is_gray(self):
+        bpy.ops.ai_tools.register_card()
+        data = json.loads(self.card_json())
+        data["measurements"]["values"][HEIGHT].update(value=None, reason="テストの理由")
+        self.replace_card_json(json.dumps(data, ensure_ascii=False))
+        log = self.draw_all()["VIEW3D_PT_ai_tools_model"]
+        gray = labels.SIGNAL_ICONS[Signal.GRAY]
+        self.assertIn(("背の高さ：測れませんでした（テストの理由）", gray),
+                      [(c["text"], c["icon"]) for c in log if c["kind"] == "label"])
+        self.assertIn("【灰】測れなかった値：1 個", label_texts(log))
+
+    def test_bone_check_result_keys_are_optional(self):
+        """目録の道具の結果：sway_extras（揺れ物の骨）があれば数を出し、無くても（古い版の結果でも）描ける。
+        知らない項目が増えても、数え方は変わらない"""
+        original = registry.map_bone_names
+
+        def with_sway(params):
+            return {**original(params), "sway_extras": ["髪1", "髪2"], "something_new": 1}
+
+        def without_sway(params):
+            return {key: value for key, value in original(params).items() if key != "sway_extras"}
+
+        with mock.patch.object(registry, "map_bone_names", with_sway):
+            self.assertEqual(bpy.ops.ai_tools.check_bones(), {"FINISHED"})
+        check = state.bone_check()
+        self.assertEqual(operators.bone_check_counts(check.result, len(check.names)),
+                         {"total": 96, "mapped": 96, "extras": 0, "unknown": 0, "conflicts": 0, "missing": 0})
+        lines = label_texts(self.draw_all()["VIEW3D_PT_ai_tools_bones"])
+        self.assertIn("骨：96 本", lines)
+        self.assertIn("そのうち、揺れ物の骨：2 本", lines)
+        with mock.patch.object(registry, "map_bone_names", without_sway):
+            self.assertEqual(bpy.ops.ai_tools.check_bones(), {"FINISHED"})
+        self.assertNotIn("sway_extras", state.bone_check().result)
+        lines = label_texts(self.draw_all()["VIEW3D_PT_ai_tools_bones"])
+        self.assertIn("骨：96 本", lines)
+        self.assertFalse(any(line.startswith("そのうち、揺れ物の骨") for line in lines), lines)
+
+
+class PanelWithoutModelTest(UiCase):
+    """モデルの無いファイル：どのパネルも描けて、ボタンは日本語で断る"""
+
+    with_model = False
+
+    def test_panels_draw_without_a_model(self):
+        logs = {cls.__name__: draw(cls) for cls in panel.CLASSES}
+        for name, log in logs.items():
+            for call in log:
+                with self.subTest(panel=name, call=call.get("text")):
+                    self.assertIs(call["translate"], False)
+                    self.assertIn(call["icon"], ICONS)
+                    if call["kind"] == "label":
+                        self.assertFalse(call["text"].startswith("思いがけないエラーです"), call["text"])
+        self.assertEqual(label_texts(logs["VIEW3D_PT_ai_tools"])[0], "モデルが見つかりません：アーマチュアがありません")
+        self.assertIn("まだ登録していません。「登録する」を押してください", label_texts(logs["VIEW3D_PT_ai_tools_model"]))
+        self.assertEqual([c["idname"] for c in logs["VIEW3D_PT_ai_tools_bones"] if c["kind"] == "operator"],
+                         ["ai_tools.check_bones"])
+
+    def test_operators_refuse_in_japanese_without_a_model(self):
+        with self.assertRaisesRegex(RuntimeError, "登録できませんでした：アーマチュアがありません"):
+            bpy.ops.ai_tools.register_card()
+        with self.assertRaisesRegex(RuntimeError, "骨の名前を調べられませんでした：アーマチュアがありません"):
+            bpy.ops.ai_tools.check_bones()
+        self.assertEqual(bpy.ops.ai_tools.check_card(), {"CANCELLED"})
+        self.assertIsNone(bpy.data.texts.get(card_bpy.TEXT_NAME))
+        self.assertIsNone(state.bone_check())
 
 
 # MARK: - 小さな道具

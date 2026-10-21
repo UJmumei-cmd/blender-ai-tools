@@ -911,6 +911,39 @@ class ConverterRoundtripTest(unittest.TestCase):
         self.assertEqual(by_key[key].value, elbows.value)
         self.assertAlmostEqual(by_key[key].value, ARMATURE_SCALE * plain[key].value, delta=1e-7)
 
+    def test_unexercised_pose_keeps_the_yellow_visible(self):
+        """骨が動かなかったポーズ（本物のモデルでは、IK に戻される脚のポーズ など）が混ざると、influence_limit_effect は
+        灰になる（灰 > 黄）。ただし elbows で見つけた黄は隠さない：値は elbows のずれのまま、理由の最初の文は黄の文、
+        details["measured_signal"] は黄、changed_count は5本の頂点の数。動いたポーズでは、どの頂点も測れている"""
+        plain = {m.name: m for m in self.run_plain()}
+        poses = dict(roundtrip.TEST_POSES)
+        poses["impossible"] = {"存在しない骨": ((0.0, 0.0, 1.0), 30.0)}  # モデルに無い骨だけのポーズ：何も動かない
+        run = self.runs[False]
+        results = roundtrip_bpy.run_roundtrip(run["usdz"], run["rig"], poses=poses)
+        deviations = self.deviations(results)
+        self.assertEqual(list(deviations), [roundtrip.REST_POSE, *poses])
+        impossible = deviations["impossible"]
+        self.assertEqual((impossible.signal, impossible.details["moved_joint_count"]), (Signal.GRAY, 0))
+        self.assertEqual(impossible.details["missing_bones"], ("存在しない骨",))
+        effect = next(m for m in results if m.name == roundtrip.INFLUENCE_EFFECT_NAME)
+        before = plain[roundtrip.INFLUENCE_EFFECT_NAME]
+        self.assertEqual(before.signal, Signal.YELLOW)
+        self.assertEqual(effect.signal, Signal.GRAY)
+        self.assertEqual(effect.details["measured_signal"], Signal.YELLOW)
+        self.assertEqual(effect.value, before.value)
+        self.assertEqual(effect.value, deviations["elbows"].value)
+        self.assertEqual(effect.reason.split("。")[0], before.reason)
+        self.assertIn("動かなかったポーズ", effect.reason)
+        self.assertEqual(effect.details["unexercised_poses"], ("impossible",))
+        self.assertEqual(effect.details["unmeasured_poses"], ())
+        self.assertEqual((effect.details["limited_count"], effect.details["changed_count"],
+                          effect.details["unmeasured_count"]), (4, 4, 0))
+        body = effect.details["meshes"][mmd_model.BODY_NAME]
+        np.testing.assert_array_equal(body["limited"], np.sort(np.array(self.info["five_influence_vertices"])))
+        np.testing.assert_array_equal(body["unmeasured"], [])
+        self.assertEqual(body["worst_pose"], ("elbows",) * 4)
+        self.assertLess(float(body["poses"]["impossible"].max()), TOLERANCE)  # 動かないポーズでは、ずれも無い
+
     def test_four_influences_is_green(self):
         """5本の骨の頂点が無い見本：convert_blend.py は1つも絞らず、E2 も「4本を超える頂点はありません」の緑"""
         self.info, self.hidden = build_fixture(False, five_influences=False)

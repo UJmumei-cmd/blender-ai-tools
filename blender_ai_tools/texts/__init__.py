@@ -15,9 +15,9 @@ import string
 from types import MappingProxyType
 from typing import Any
 
-from . import jobs, motion, screen, versions
+from . import jobs, motion, report, screen, versions
 
-_MODULES = (screen, versions, motion, jobs)
+_MODULES = (screen, versions, motion, jobs, report)
 
 LANGUAGES = ("ja", "en")
 # 文が無い言語のときに使う言語（日本語が元）

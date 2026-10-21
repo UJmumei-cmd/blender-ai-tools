@@ -1468,6 +1468,9 @@ def check_influence_limit(deviations: Iterable[Measurement], source_weights: Map
       ポーズ（details に "meshes" が無い）、骨が動かなかったポーズ（details["moved_joint_count"] が 0。compare_pose に
       rest を渡したときに入る）、休みの姿勢のほかに測ったポーズが無い、ウェイトを読めなかったメッシュ、調べるメッシュが無い。
       休みの姿勢では、骨の重みを変えても形は変わらないので、休みの姿勢だけでは確かめたことにしない。
+    - 灰は、ほかのポーズで見つけた黄・緑を隠さない：値は測れた中でいちばん大きいずれのまま、理由の最初の文はその信号の文、
+      details["measured_signal"] は測れた所だけで決めた信号（赤・黄・緑。何も測れなければ None）。
+      報告はこれで「灰（測れた所は黄）」のように出せる。
     details["meshes"][元のメッシュの名前]："limited"（4本を超える頂点の番号）、"deviations"（頂点ごとの、いちばん大きいずれ。
     測れなかった頂点は NaN）、"worst_pose"（そのずれのポーズ）、"poses"（ポーズ → 頂点ごとのずれ）、"unmeasured"。
     """
@@ -1566,6 +1569,8 @@ def check_influence_limit(deviations: Iterable[Measurement], source_weights: Map
         "worst": [{"mesh": name, "source_index": index, "pose": pose, "deviation": value}
                   for value, name, index, pose in rows[:WORST_LIST_LENGTH]],
         "meshes": mesh_details,
+        # 測れた所だけで決めた信号（灰のときも、見つけた黄・赤をここに残す）。何も測れていなければ None
+        "measured_signal": None,
     }
 
     # 4本を超える頂点が無いとき（ウェイトを数えて確かめたので、緑にしてよい）
@@ -1578,6 +1583,7 @@ def check_influence_limit(deviations: Iterable[Measurement], source_weights: Map
                                           details)
         reason = ("4本を超える頂点はありません" if not hidden_limited
                   else "4本を超える頂点は、服で隠れて書き出されない物だけです")
+        details["measured_signal"] = Signal.GREEN
         return Measurement(INFLUENCE_EFFECT_NAME, 0.0, "m", Signal.GREEN, reason, details)
 
     # 4本を超える頂点があるとき
@@ -1596,6 +1602,7 @@ def check_influence_limit(deviations: Iterable[Measurement], source_weights: Map
     else:
         signal = Signal.GREEN
         reasons.append("4本を超える頂点はありますが、形の変わりは再現性の幅の中です")
+    details["measured_signal"] = signal
     gray_reasons = []
     if unmeasured_count:
         gray_reasons.append("4本を超える頂点のうち、ずれを測れなかった物があります")

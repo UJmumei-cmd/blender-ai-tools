@@ -203,20 +203,33 @@ def _draw_choice(row: Any, object_name: str, material_name: str, choice: Any, ed
         props.material_name = material_name
 
 
+def _listed_parts(parts: Sequence[Any]) -> list[tuple[Any, list[Any]]]:
+    """一覧に出す順：(部品, その材質の並び)。
+
+    全部が MAX_LISTED_ROWS に入るときはカードの順。入らないときは、まだ決めていない部品と材質を先にする
+    （上から決めると、隠れていた物が出てくる。決めた物を後ろに回さないと、後ろの材質の種類を決められない）。
+    """
+    if sum(1 + len(part.materials) for part in parts) <= MAX_LISTED_ROWS:
+        return [(part, list(part.materials)) for part in parts]
+    # sorted は並びを保つので、同じ側の中はカードの順のまま（False＝まだ決めていない物が先）
+    ordered = sorted(parts, key=lambda part: part.is_confirmed and not part.unconfirmed_materials)
+    return [(part, sorted(part.materials, key=lambda material: material.is_confirmed)) for part in ordered]
+
+
 def draw_parts(layout: Any, context: Any, card: ModelCard, *, editable: bool) -> None:
     """部品（メッシュ）と、材質が2つ以上ある部品の材質ごとの、種類の一覧"""
     box = layout.box()
     box.label(text=text("screen.parts_title", count=len(card.parts)), icon="MESH_DATA", translate=False)
     total = sum(1 + len(part.materials) for part in card.parts)
     shown = 0
-    for part in card.parts:
+    for part, materials in _listed_parts(card.parts):
         if shown >= MAX_LISTED_ROWS:
             break
         column = box.column(align=True)
         column.label(text=part.object_name, icon="OBJECT_DATA", translate=False)
         _draw_choice(column.row(align=True), part.object_name, "", part, editable)
         shown += 1
-        for material in part.materials:
+        for material in materials:
             if shown >= MAX_LISTED_ROWS:
                 break
             row = column.row(align=True)
@@ -261,6 +274,9 @@ def draw_bone_check(layout: Any, context: Any, check: state.BoneCheck, card: Mod
     column.label(text=text("screen.bones_total", count=counts["total"]), translate=False)
     column.label(text=text("screen.bones_mapped", count=counts["mapped"]), translate=False)
     column.label(text=text("screen.bones_extras", count=counts["extras"]), translate=False)
+    if "sway_extras" in check.result:
+        # 揺れ物の骨の数（道具の版 2 から。無い結果でも描ける）
+        column.label(text=text("screen.bones_sway", count=len(check.result["sway_extras"])), translate=False)
     column.label(text=text("screen.bones_unknown", count=counts["unknown"]), translate=False)
     column.label(text=text("screen.bones_conflicts", count=counts["conflicts"]), translate=False)
     column.label(text=text("screen.bones_missing", count=counts["missing"]), translate=False)

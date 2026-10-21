@@ -599,7 +599,11 @@ SWAY_NAMES = (
 
 # 人型の骨らしい分からない名前：揺れ物の決まりで隠さない（ユーザーに聞く）
 HUMANOID_LIKE_UNKNOWN = ("LeftForeArmTwist", "LeftForeArmRoll", "ForeArm_L", "forearm", "UpperArmTwist_L", "Spine3",
-                         "Spine4", "Chest2", "Neck2", "左腕捩4", "左腕捻4", "左手捩4")
+                         "Spine4", "Chest2", "Neck2", "左腕捩4", "左腕捻4", "左手捩4",
+                         # ほかの書き方の人型の骨らしい名前（英語・日本語）
+                         "LeftArmRoll", "Neck1", "Head_End", "Pelvis", "LeftThigh", "LeftCalf", "LeftClavicle", "Sternum",
+                         "Tongue", "LeftEyelid", "Hips2", "LeftHandThumb0", "首2", "頭2", "左手首2", "両目先", "左目先",
+                         "左腕捩り", "左ひじ補助", "肩甲骨.L", "鎖骨.L", "上半身4", "左足IK親2")
 # 字の並びとしては揺れ物の英語を含むが、語としては含まない名前（ear・tail・cap・hat・acc・hair）
 LOOKALIKE_UNKNOWN = ("Heart", "Spear", "Bearing", "Earring_L", "LeftEarring", "Detail_01", "Retail", "Capsule_L",
                      "Chat_1", "Accent_1", "Chair_L")
@@ -671,6 +675,28 @@ class SwayNameTest(unittest.TestCase):
                 self.assertFalse(is_sway_name(alias))
                 self.assertFalse(is_known_extra(alias))
 
+    def test_alias_variants_are_never_sway(self):
+        """aliases の全部と、左右の書き換えの形（derive_lr_suffix の表：肘.L・膝_R・腕捻 r など）は、全角・大文字小文字・
+        半角カナ・名前空間の書き方を変えても、揺れ物の決まりで隠れない（人型の骨が先）"""
+        count = 0
+        for file_name in bones.ALIAS_FILES:
+            data = json.loads((bones.DATA_DIR / file_name).read_text(encoding="utf-8"))
+            for table, spec in data["tables"].items():
+                for alias, canonical in spec.get("aliases", {}).items():
+                    forms = [alias]
+                    if spec.get("derive_lr_suffix") and ("左" in alias) != ("右" in alias):
+                        forms += [lr_form(alias, sep, lower) for sep in (".", "_", " ", "-", "") for lower in (False, True)]
+                    for form in forms:
+                        # 名前空間は、表を示さない物（Armature:）にする。mixamorig: は LeftLeg の意味を Mixamo に決めるため
+                        for variant in (form, to_fullwidth(form), swap_ascii_case(form), to_halfwidth_kana(form),
+                                        "Armature:" + form, " " + form + " "):
+                            count += 1
+                            with self.subTest(file=file_name, table=table, name=variant):
+                                self.assertIn(canonical, lookup_candidates(variant))
+                                self.assertFalse(is_sway_name(variant))
+                                self.assertFalse(is_known_extra(variant))
+        self.assertGreater(count, 3000)
+
     def test_named_humanoid_examples_map_first(self):
         expected = {"左肩": "左肩", "LeftForeArm": "左ひじ", "RightUpLeg": "右足", "upper body": "上半身",
                     "上半身2": "上半身2", "首": "首", "頭": "頭", "左腕捻3": "左腕捩3"}
@@ -720,6 +746,12 @@ class SwayNameTest(unittest.TestCase):
                 self.assertFalse(is_sway_name(name))
         swaying = [extra for _, _, extra in all_known_extras() if is_sway_name(extra)]
         self.assertEqual(swaying, [])
+        # 書き方を変えても同じ（全角・大文字小文字・名前空間）
+        for _, _, extra in all_known_extras():
+            for variant in (to_fullwidth(extra), swap_ascii_case(extra), "Armature:" + extra):
+                with self.subTest(name=variant):
+                    self.assertTrue(is_known_extra(variant))
+                    self.assertFalse(is_sway_name(variant))
         # 前置きで知っている骨でも、揺れ物の決まりに当たれば揺れ物の骨
         for name in ("J_Sec_Hair1_03", "J_Sec_L_Bust1", "_shadow_髪1"):
             with self.subTest(name=name):
@@ -1305,6 +1337,19 @@ class BrokenDataTest(unittest.TestCase):
             with self.subTest(key=key, value=value):
                 self.reset(bones.SWAY_FILE)
                 self.assert_broken(bones.SWAY_FILE, lambda d: d[key].append(value), re.escape(message))
+
+    def test_exact_known_extra_matching_a_pattern_is_also_sway(self):
+        """known_extras に字のまま載っている骨が、揺れ物の決まりにも当たるときは、知っている骨であり揺れ物の骨でもある
+        （sway_extras は known_extras の中の印。入れ物は増えない）"""
+        self.edit("aliases_vrm.json", lambda d: d["tables"]["vrm"]["known_extras"].append("hairRoot"))
+        bones._dictionary.cache_clear()
+        self.assertTrue(is_known_extra("hairRoot"))
+        self.assertTrue(is_sway_name("hairRoot"))
+        result = map_bones(["hairRoot", "upperChest", "謎の骨"])
+        check_partition(self, ["hairRoot", "upperChest", "謎の骨"], result)
+        self.assertEqual(result.known_extras, ("hairRoot", "upperChest"))
+        self.assertEqual(result.sway_extras, ("hairRoot",))
+        self.assertEqual(result.unknown, ("謎の骨",))
 
     def test_sway_list_is_data_driven(self):
         """揺れ物の名前は、プログラムを変えずに data/extras_sway.json に書き足せる"""

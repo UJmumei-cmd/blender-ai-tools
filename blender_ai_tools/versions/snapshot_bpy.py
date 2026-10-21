@@ -4,6 +4,9 @@
 編集モードの物は、編集中の形を先にデータへ写してから読む（extract_bpy.sync_edit_mode。モードはそのまま）。
 
 読む物（シーンの中の、全部のオブジェクト。名前の順）：
+- オブジェクトの名前は name_full：ふつうの（このファイルの）オブジェクトは name と同じ。ほかのファイルからリンクした
+  オブジェクトは「名前 [ファイル名]」になる。同じ名前のオブジェクトが、このファイルの物とリンクした物で重なっても、
+  記録の中で片方がもう片方を消さないようにする（消すと、変わった所が無いと見えてしまう）。親・ドライバーの持ち主も同じ
 - オブジェクト：種類・親（骨を親にしていれば、その骨）・matrix_basis・モディファイア（名前・種類・show_render）・材質の枠
 - メッシュ：オブジェクトの中の座標の頂点（シェイプキーがあれば基本のキーの形）・三角形（loop_triangles）・
   面（角の頂点の並び）・面の材質の番号・シェイプキー・頂点グループの名前とウェイト（重みが 0 の物は入れない）
@@ -53,7 +56,8 @@ def _object_state(obj: Any) -> ObjectState:
     parent_bone = obj.parent_bone if parent is not None and obj.parent_type == "BONE" else ""
     modifiers = tuple((m.name, m.type, bool(m.show_render)) for m in obj.modifiers)
     materials = tuple("" if slot.material is None else slot.material.name for slot in obj.material_slots)
-    return ObjectState(type=obj.type, parent=None if parent is None else parent.name, matrix=_matrix(obj.matrix_basis),
+    return ObjectState(type=obj.type, parent=None if parent is None else parent.name_full,
+                       matrix=_matrix(obj.matrix_basis),
                        modifiers=modifiers, materials=materials, parent_bone=parent_bone)
 
 
@@ -140,7 +144,7 @@ def _variable_text(variable: Any) -> str:
         target_id = target.id
         parts.append("|".join((
             str(target.id_type),
-            "" if target_id is None else target_id.name,
+            "" if target_id is None else target_id.name_full,
             str(target.data_path),
             str(target.bone_target),
             str(target.transform_type),
@@ -165,12 +169,13 @@ def _drivers_of(owner: str, id_data: Any, prefix: str) -> list[Driver]:
 
 
 def _object_drivers(obj: Any) -> list[Driver]:
-    drivers = _drivers_of(obj.name, obj, "")
+    owner = obj.name_full
+    drivers = _drivers_of(owner, obj, "")
     data = obj.data
     if data is not None and obj.type in ("MESH", "ARMATURE"):
-        drivers += _drivers_of(obj.name, data, "data.")
+        drivers += _drivers_of(owner, data, "data.")
         if obj.type == "MESH" and data.shape_keys is not None:
-            drivers += _drivers_of(obj.name, data.shape_keys, "data.shape_keys.")
+            drivers += _drivers_of(owner, data.shape_keys, "data.shape_keys.")
     return drivers
 
 
@@ -182,14 +187,15 @@ def take_snapshot(scene: Any = None) -> Snapshot:
         scene = bpy.context.scene
     if not isinstance(scene, bpy.types.Scene):
         raise ValueError(f"scene はシーンにしてください（いまの物：{type(scene).__name__}）")
-    objects_in_scene = sorted(scene.objects, key=lambda obj: obj.name)
+    objects_in_scene = sorted(scene.objects, key=lambda obj: obj.name_full)
     sync_edit_mode(*objects_in_scene)
     objects, meshes, armatures, drivers = {}, {}, {}, []
     for obj in objects_in_scene:
-        objects[obj.name] = _object_state(obj)
+        name = obj.name_full  # リンクしたオブジェクトは「名前 [ファイル名]」（このファイルの物と重ならない）
+        objects[name] = _object_state(obj)
         if obj.type == "MESH":
-            meshes[obj.name] = _mesh_state(obj)
+            meshes[name] = _mesh_state(obj)
         elif obj.type == "ARMATURE":
-            armatures[obj.name] = _armature_state(obj)
+            armatures[name] = _armature_state(obj)
         drivers += _object_drivers(obj)
     return Snapshot(objects=objects, meshes=meshes, armatures=armatures, drivers=tuple(drivers))

@@ -123,6 +123,9 @@ class ThresholdLocationTest(unittest.TestCase):
             return inspect.signature(function).parameters[parameter].default
 
         self.assertEqual(default(catalog.parse_tool_call, "max_length"), thresholds.MAX_TOOL_CALL_LENGTH)
+        from blender_ai_tools.versions import diff as versions_diff
+        self.assertEqual(default(versions_diff.diff_snapshots, "tolerance"), thresholds.REPRO_TOLERANCE_LENGTH)
+        self.assertEqual(default(versions_diff.diff_snapshots, "weight_tolerance"), thresholds.REPRO_TOLERANCE_WEIGHT)
         self.assertEqual(default(mesh_check.loose_parts, "max_faces"), thresholds.LOOSE_PART_MAX_FACES)
         self.assertEqual(default(mesh_check.summarize_loose_parts, "max_faces"), thresholds.LOOSE_PART_MAX_FACES)
         for function in (visibility.look_at, visibility.standard_views):
@@ -369,6 +372,7 @@ ROUNDTRIP_UNITS = {
     roundtrip.DEVIATION_NAME: "m", roundtrip.COVERAGE_NAME: "count", roundtrip.SKELETON_NAME: "m",
     roundtrip.JOINT_NAMES_NAME: "count", roundtrip.HUMANOID_NAME: "count", roundtrip.SHAPE_KEYS_NAME: "count",
     roundtrip.INFLUENCES_NAME: "count", roundtrip.WEIGHT_SUMS_NAME: "ratio", roundtrip.PHYSICS_NAME: "count",
+    roundtrip.INFLUENCE_EFFECT_NAME: "m",
 }
 CARD_UNITS = {
     card.SEMI_STANDARD_NAME: "count", card.UNKNOWN_BONES_NAME: "count", card.UNCONFIRMED_PARTS_NAME: "count",
@@ -386,6 +390,7 @@ def empty_roundtrip_results() -> list[Measurement]:
         roundtrip.check_skeleton(model),
         *roundtrip.check_names(rig, model, [], []),
         *roundtrip.check_influences(model),
+        roundtrip.check_influence_limit([], {}),
         roundtrip.check_no_physics(model, []),
     ]
 
@@ -395,7 +400,7 @@ class ExportAndCardConventionsTest(unittest.TestCase):
 
     def test_names_are_snake_case_and_distinct(self):
         groups = {"measure": NAME_CONSTANTS, "roundtrip": set(ROUNDTRIP_UNITS), "card": set(CARD_UNITS)}
-        self.assertEqual(len(ROUNDTRIP_UNITS), 9)
+        self.assertEqual(len(ROUNDTRIP_UNITS), 10)
         self.assertEqual(len(CARD_UNITS), 6)
         for label, names in groups.items():
             for name in names:

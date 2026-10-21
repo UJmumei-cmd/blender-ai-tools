@@ -57,6 +57,9 @@ JOB_TIMEOUT_SECONDS = 4.0 * 3600.0
 REPRO_TOLERANCE_LENGTH = mm(0.01)
 REPRO_TOLERANCE_ANGLE_DEG = 0.01
 REPRO_TOLERANCE_RATIO = 1e-6
+# 同じ入力を2回測ったときに許すウェイト（重み）の差。これより小さい差は、変化として数えない（仮）。
+# WEIGHT_EPSILON（0 とみなす重み）とは意味が違うので、別に持つ
+REPRO_TOLERANCE_WEIGHT = 1e-6
 # 乱数の種を指定しなかったときの種
 DEFAULT_SEED = 0
 # git の答えを待つ時間の上限（秒）。git_state の1回の git ごと。過ぎたら「分からない」（None）にする（仮）

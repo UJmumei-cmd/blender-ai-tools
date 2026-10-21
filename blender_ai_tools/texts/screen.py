@@ -199,6 +199,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "screen.bones_total": {"ja": "骨：{count} 本", "en": "Bones: {count}"},
     "screen.bones_mapped": {"ja": "準標準の名前に対応：{count} 本", "en": "Matched to semi-standard names: {count}"},
     "screen.bones_extras": {"ja": "揺れ物・飾りなど：{count} 本", "en": "Sway, decoration and other bones: {count}"},
+    "screen.bones_sway": {"ja": "そのうち、揺れ物の骨：{count} 本", "en": "Of these, sway bones: {count}"},
     "screen.bones_unknown": {"ja": "分からない骨：{count} 本", "en": "Unknown bones: {count}"},
     "screen.bones_conflicts": {"ja": "取り合い：{count} 個", "en": "Conflicts: {count}"},
     "screen.bones_missing": {"ja": "足りない準標準の骨：{count} 本", "en": "Missing semi-standard bones: {count}"},
@@ -279,9 +280,9 @@ TEXTS: dict[str, dict[str, str]] = {
     # MARK: - 拡張機能の設定
     "screen.pref_language": {"ja": "画面の言語", "en": "Language"},
     "screen.pref_language_tip": {
-        "ja": "この道具の画面と報告の言語（Blender に合わせる：Blender が日本語なら日本語、ほかは英語）",
-        "en": "Language of this tool's screens and reports (Follow Blender: Japanese when Blender is in Japanese, "
-              "otherwise English)",
+        "ja": "この道具の画面と報告の言語（初めは日本語。「Blender に合わせる」は、Blender が日本語なら日本語、ほかは英語）",
+        "en": "Language of this tool's screens and reports (Japanese at first. “Follow Blender” gives Japanese when "
+              "Blender is in Japanese, otherwise English)",
     },
     "screen.pref_language_auto": {"ja": "Blender に合わせる", "en": "Follow Blender"},
     "screen.pref_language_ja": {"ja": "日本語", "en": "日本語 (Japanese)"},
@@ -299,8 +300,10 @@ TEXTS: dict[str, dict[str, str]] = {
     "screen.pref_koumakan_missing": {"ja": "見つかりません：{error}", "en": "Not found: {error}"},
     "screen.pref_blender_path": {"ja": "書き出しに使う Blender", "en": "Blender used for export"},
     "screen.pref_blender_path_tip": {
-        "ja": "書き出しと裏の作業に使う Blender のファイル。空なら、いま動いている Blender を使います",
-        "en": "Blender executable for export and background work. When empty, the running Blender is used",
+        "ja": "書き出しと裏の作業に使う Blender のファイル（Mac では Blender.app を選んでもよい）。"
+              "空なら、いま動いている Blender を使います",
+        "en": "Blender executable for export and background work (on Mac, Blender.app can be chosen). "
+              "When empty, the running Blender is used",
     },
     "screen.pref_blender_default": {
         "ja": "空なら、いま動いている Blender を使います：{path}",

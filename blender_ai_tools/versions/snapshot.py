@@ -609,12 +609,16 @@ class _ArrayReader:
 
 
 def _read_arrays(path: Path) -> dict[str, np.ndarray]:
-    """npz を pickle なしで読み、全部の並びを取り出す。pickle の入った並び（object の並び）は ValueError"""
+    """npz を pickle なしで読み、全部の並びを取り出す。pickle の入った並び（object の並び）は ValueError。
+
+    読めない物は、どんな壊れ方でも ValueError にする（zip として壊れている物は zipfile.BadZipFile、
+    .npy でない物（NpzFile は bytes を返す）など。読む側は ValueError を灰にする）。
+    """
     try:
         loaded = np.load(path, allow_pickle=False)
     except ValueError as error:
         raise ValueError(f"{path.name} を読めません（pickle は読みません）：{error}") from error
-    except (OSError, EOFError) as error:
+    except Exception as error:  # zip として壊れている（zipfile.BadZipFile）・読めない（OSError）など
         raise ValueError(f"{path.name} を読めません：{error}") from error
     if not isinstance(loaded, np.lib.npyio.NpzFile):
         raise ValueError(f"{path.name} が npz（並びを集めた zip）ではありません")
@@ -622,12 +626,15 @@ def _read_arrays(path: Path) -> dict[str, np.ndarray]:
         arrays = {}
         for key in loaded.files:
             try:
-                arrays[key] = loaded[key]
+                array = loaded[key]
             except ValueError as error:
                 raise ValueError(f"{path.name} の並び {key!r} を読めません（pickle の入った並びは読みません）：{error}") \
                     from error
             except Exception as error:  # zip の中身が壊れている など
                 raise ValueError(f"{path.name} の並び {key!r} を読めません：{error}") from error
+            if not isinstance(array, np.ndarray):
+                raise ValueError(f"{path.name} の {key!r} が数の並び（.npy）ではありません（{type(array).__name__}）")
+            arrays[key] = array
     return arrays
 
 

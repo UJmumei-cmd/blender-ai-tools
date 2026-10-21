@@ -865,6 +865,7 @@ class InfluenceLimitTest(unittest.TestCase):
         self.assertEqual(result.signal, Signal.YELLOW)
         self.assertAlmostEqual(result.value, 0.00002, places=12)
         self.assertTrue(result.reason)
+        self.assertEqual(result.details["measured_signal"], Signal.YELLOW)
         body = result.details["meshes"]["Body"]
         np.testing.assert_array_equal(body["limited"], [1])
         np.testing.assert_allclose(body["deviations"], [0.00002], atol=1e-12)
@@ -885,6 +886,7 @@ class InfluenceLimitTest(unittest.TestCase):
         self.assertEqual(result.signal, Signal.RED)
         self.assertAlmostEqual(result.value, 0.0006, places=12)
         self.assertEqual(result.details["over_limit_count"], 1)
+        self.assertEqual(result.details["measured_signal"], Signal.RED)
 
     def test_no_change_is_green(self):
         result = self.check(limit_results())
@@ -892,6 +894,7 @@ class InfluenceLimitTest(unittest.TestCase):
         self.assertLess(result.value, 1e-12)
         self.assertIn("再現性の幅", result.reason)
         self.assertEqual(result.details["changed_count"], 0)
+        self.assertEqual(result.details["measured_signal"], Signal.GREEN)
 
     def test_no_limited_vertex_is_green_with_reason(self):
         """4本を超える頂点が無ければ、ウェイトを数えて確かめたので緑（値 0）。ほかの頂点のずれは見ない"""
@@ -902,6 +905,7 @@ class InfluenceLimitTest(unittest.TestCase):
                 self.assertEqual((result.signal, result.value, result.reason),
                                  (Signal.GREEN, 0.0, "4本を超える頂点はありません"))
                 self.assertEqual(result.details["limited_count"], 0)
+                self.assertEqual(result.details["measured_signal"], Signal.GREEN)
                 np.testing.assert_array_equal(result.details["meshes"]["Body"]["limited"], [])
 
     def test_only_limited_vertices_are_looked_at(self):
@@ -967,6 +971,7 @@ class InfluenceLimitTest(unittest.TestCase):
         result = self.check(limit_results(posed=posed))
         self.assertEqual(result.signal, Signal.GRAY)
         self.assertLess(result.value, 1e-12)  # 休みの姿勢では測れた
+        self.assertEqual(result.details["measured_signal"], Signal.GREEN)  # 測れた所だけなら緑
         body = result.details["meshes"]["Body"]
         self.assertTrue(np.isnan(body["poses"]["bend"][0]))
         np.testing.assert_array_equal(body["unmeasured"], [1])
@@ -992,13 +997,26 @@ class InfluenceLimitTest(unittest.TestCase):
         self.assertAlmostEqual(result.value, 0.00002, places=12)
         self.assertEqual(result.details["unmeasured_poses"], ("twist",))
         self.assertEqual(result.details["poses"], ("rest", "bend"))
+        self.assertEqual(result.details["measured_signal"], Signal.YELLOW)
 
     def test_pose_that_moved_nothing_is_gray(self):
+        """骨が動かなかったポーズ（IK で戻された など）があれば灰（灰 > 黄）。ただし、ほかのポーズで見つけた黄は隠さない：
+        値・理由の最初の文・changed_count・details["measured_signal"]（測れた所だけで決めた信号）に残す"""
+        yellow = self.check(crafted(0.0, 0.00002, 0.0))
+        self.assertEqual(yellow.signal, Signal.YELLOW)
         result = self.check(crafted(0.0, 0.00002, 0.0) + [deviation_result("still", [0, 1, 2], [0.0] * 3, moved=0)])
         self.assertEqual(result.signal, Signal.GRAY)
         self.assertEqual(result.details["unexercised_poses"], ("still",))
+        self.assertEqual(result.details["measured_signal"], Signal.YELLOW)
+        self.assertAlmostEqual(result.value, 0.00002, places=12)
+        self.assertEqual(result.details["changed_count"], 1)
+        self.assertEqual(result.reason.split("。")[0], yellow.reason)
+        self.assertIn("動かなかったポーズ", result.reason)
+        self.assertEqual(result.details["unmeasured_count"], 0)  # 動いたポーズでは、どの頂点も測れている
+        np.testing.assert_array_equal(result.details["meshes"]["Body"]["unmeasured"], [])
         result = self.check(crafted(0.0, 0.0006, 0.0) + [deviation_result("still", [0, 1, 2], [0.0] * 3, moved=0)])
         self.assertEqual(result.signal, Signal.RED)
+        self.assertEqual(result.details["measured_signal"], Signal.RED)
 
     def test_rest_only_is_gray(self):
         """休みの姿勢では、重みを変えても形は変わらない。ポーズで測っていなければ、確かめたことにしない"""
@@ -1015,16 +1033,20 @@ class InfluenceLimitTest(unittest.TestCase):
                 result = self.check(results)
                 self.assertEqual(result.signal, Signal.GRAY)
                 self.assertIsNone(result.value)
+                self.assertIsNone(result.details["measured_signal"])
 
     def test_unreadable_or_missing_meshes_are_gray(self):
         result = self.check(limit_results(), {}, unmeasured={"Body": "読めません"})
         self.assertEqual((result.signal, result.value), (Signal.GRAY, None))
         self.assertEqual(result.details["unmeasured_meshes"], {"Body": "読めません"})
+        self.assertIsNone(result.details["measured_signal"])  # 4本を超える頂点を数えられていない
         result = self.check(limit_results({"bend": {1: 0.00002}}), unmeasured={"Skirt": "読めません"})
         self.assertEqual(result.signal, Signal.GRAY)
         self.assertAlmostEqual(result.value, 0.00002, places=12)
+        self.assertEqual(result.details["measured_signal"], Signal.YELLOW)
         result = self.check(limit_results(), {})  # 調べるメッシュが無い
         self.assertEqual((result.signal, result.value), (Signal.GRAY, None))
+        self.assertIsNone(result.details["measured_signal"])
 
     def test_worst_list_across_meshes(self):
         skirt = WeightTable.from_lists([FIVE_ROWS[1], FIVE_ROWS[0]])

@@ -34,7 +34,7 @@ class BaseStemTest(unittest.TestCase):
     def test_names_that_are_not_versions(self):
         """この道具が作らない形は、元の名前の一部のまま"""
         for name in ("model_v1", "model_v01", "model_v0001", "model_v000", "model_V003", "model-v003", "_v003",
-                     "model_v003x", "model_v 003", "model_v０１２"):
+                     "model_v003x", "model_v 003", "model_v０１２", "model_v003\n"):  # 終わりが改行の名前も版ではない
             with self.subTest(name=name):
                 self.assertEqual(base_stem(f"{name}.blend"), name)
                 self.assertIsNone(parse_version(f"{name}.blend"))

@@ -30,12 +30,25 @@ class RegistryTest(unittest.TestCase):
         json.dumps(result, ensure_ascii=False)  # 結果は JSON にできる
         self.assertEqual(result["mapping"]["J_Bip_C_Hips"], "センター")
         self.assertEqual(result["unknown"], ["謎の骨"])
-        # 揺れ物の骨は、人の形ではない骨として分かる（ユーザーに聞かない）
+        # 揺れ物の骨は、人の形ではない骨として分かる（ユーザーに聞かない）。報告の「揺れ物の骨 N 本」のために、別にも出す
         self.assertIn("スカート_L", result["known_extras"])
+        self.assertEqual(result["sway_extras"], ["スカート_L"])
         self.assertFalse(result["semi_standard_compliant"])
         # 左腕 と J_Bip_L_UpperArm が同じ骨を取り合うときは、名前がそのものの 左腕 が勝つ
         self.assertEqual(result["mapping"]["左腕"], "左腕")
         self.assertEqual(result["shadowed"], {"J_Bip_L_UpperArm": "左腕"})
+
+    def test_result_shape_and_version(self):
+        """結果の項目は決まった形。項目を足したら道具の版を上げる（A15 の記録で、前の結果と比べられる）"""
+        self.assertEqual(self.catalog.get("bones.map_names").version, "2")
+        result = self.catalog.call("bones.map_names", {"names": ["髪1", "謎の骨", "左腕", "操作中心"]})
+        self.assertEqual(set(result), {"mapping", "unknown", "known_extras", "sway_extras", "conflicts", "ambiguous",
+                                       "shadowed", "missing_standard", "missing_semi_standard", "semi_standard_compliant"})
+        # 揺れ物の骨は known_extras の中の印：両方に入る。揺れ物でない知っている骨（操作中心）は known_extras だけ
+        self.assertEqual(result["known_extras"], ["髪1", "操作中心"])
+        self.assertEqual(result["sway_extras"], ["髪1"])
+        self.assertEqual(result["unknown"], ["謎の骨"])
+        self.assertEqual(result["mapping"], {"左腕": "左腕"})
 
     def test_rejects_bad_calls(self):
         with self.assertRaises(UnknownToolError):

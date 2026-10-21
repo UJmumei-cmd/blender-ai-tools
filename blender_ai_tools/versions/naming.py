@@ -31,7 +31,8 @@ SNAPSHOT_SUFFIX = ".snapshot"
 # 版の番号の桁（これより少ない桁は 0 で埋める）
 VERSION_DIGITS = 3
 # 名前の終わりの「_v」と番号。3桁か、0 で始まらない4桁以上（version_path が作る形だけ）
-_VERSION_STEM = re.compile(r"^(?P<stem>.+)_v(?P<number>[0-9]{3}|[1-9][0-9]{3,})$")
+# （$ ではなく \Z：$ は終わりの改行の前にも合うので、名前の終わりが改行の物を版とまちがえる）
+_VERSION_STEM = re.compile(r"^(?P<stem>.+)_v(?P<number>[0-9]{3}|[1-9][0-9]{3,})\Z")
 # 次の番号を取るとき、ほかのプロセスに先に取られていたら、次の番号を試す。その回数の上限
 MAX_RESERVE_TRIES = 1000
 

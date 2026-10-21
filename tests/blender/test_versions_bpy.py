@@ -8,6 +8,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import bmesh
 import bpy
@@ -15,7 +16,7 @@ import numpy as np
 
 from blender_ai_tools.measure.results import Signal
 from blender_ai_tools.model.extract_bpy import bone_rest, bone_weights
-from blender_ai_tools.versions import history
+from blender_ai_tools.versions import history, save_bpy
 from blender_ai_tools.versions.diff import change_lines, diff_snapshots
 from blender_ai_tools.versions.save_bpy import compare_with_previous, current_base, previous_version, save_version
 from blender_ai_tools.versions.snapshot import ARRAYS_NAME, JSON_NAME, load_snapshot, snapshots_equal
@@ -159,6 +160,19 @@ class SaveVersionTest(VersionsCase):
         self.assertEqual(list((self.folder / "model_v003.snapshot").iterdir()), [])
         self.assertEqual(digest(self.base), self.base_digest)
 
+    def test_failure_leaves_no_files_and_gives_the_number_back(self):
+        """途中で失敗したら、自分で作った物（取っておいた名前・記録のフォルダ）を消す。次の保存は同じ番号から"""
+        for failing in ("save_snapshot", "_save_copy"):
+            with self.subTest(failing=failing):
+                with mock.patch.object(save_bpy, failing, side_effect=RuntimeError("わざと失敗")):
+                    with self.assertRaises(RuntimeError):
+                        save_version()
+                self.assertEqual(self.folder_names(), ["model.blend"])
+                self.assertEqual(bpy.data.filepath, str(self.base))
+                self.assertEqual(digest(self.base), self.base_digest)
+        path, folder = save_version()
+        self.assertEqual((path.name, folder.name), ("model_v001.blend", "model_v001.snapshot"))
+
     def test_unsaved_file_needs_base_path(self):
         bpy.ops.wm.read_homefile(use_empty=True)
         mmd_model.build_model()
@@ -266,6 +280,92 @@ class TakeSnapshotTest(VersionsCase):
         curve.driver.expression = "var * 3"
         changes = diff_snapshots(snapshot, take_snapshot())
         self.assertEqual([plain(c) for c in changes], [("drivers", "Body", "versions.drivers_changed", 1, True)])
+
+    def test_linked_object_with_the_same_name_is_kept_apart(self):
+        """ほかのファイルからリンクした、同じ名前のオブジェクトが、このファイルの物を記録から消さない
+        （消えると、このファイルの物の変化が「変わった所はありません」に見える）"""
+        library = self.folder / "lib.blend"
+        bpy.ops.wm.read_homefile(use_empty=True)
+        mesh = bpy.data.meshes.new("LibMesh")
+        mesh.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+        bpy.context.scene.collection.objects.link(bpy.data.objects.new(mmd_model.BODY_NAME, mesh))
+        bpy.ops.wm.save_as_mainfile(filepath=str(library))
+        bpy.ops.wm.open_mainfile(filepath=str(self.base))
+        with bpy.data.libraries.load(str(library), link=True) as (data_from, data_to):
+            data_to.objects = [mmd_model.BODY_NAME]
+        linked = data_to.objects[0]
+        bpy.context.scene.collection.objects.link(linked)
+        local = next(o for o in bpy.context.scene.objects if o.name == mmd_model.BODY_NAME and o.library is None)
+        self.assertEqual((linked.name, local.name), (mmd_model.BODY_NAME, mmd_model.BODY_NAME))
+        self.assertNotEqual(linked.name_full, local.name_full)
+
+        snapshot = take_snapshot()
+        self.assertEqual(list(snapshot.objects), sorted([mmd_model.ARMATURE_NAME, mmd_model.BODY_NAME,
+                                                         linked.name_full, mmd_model.SKIRT_NAME]))
+        self.assertEqual(snapshot.meshes[mmd_model.BODY_NAME].vertex_count,
+                         self.info["vertex_counts"][mmd_model.BODY_NAME])
+        self.assertEqual(snapshot.objects[mmd_model.BODY_NAME].parent, mmd_model.ARMATURE_NAME)
+        self.assertEqual((snapshot.meshes[linked.name_full].vertex_count, snapshot.objects[linked.name_full].parent),
+                         (3, None))
+        # このファイルの Body の頂点を動かすと、Body の変化として出る
+        move_vertex(local, VERTEX, STEP)
+        changes = diff_snapshots(snapshot, take_snapshot())
+        self.assertEqual([plain(c) for c in changes],
+                         [("vertices", mmd_model.BODY_NAME, "versions.vertices_moved", 1, True)])
+
+    def test_editing_a_non_basis_key_changes_only_that_key(self):
+        """基本の形でないキー（あ）を編集モードで動かすと、頂点（基本の形）は変わらず、そのキーの形だけが変わる"""
+        before = take_snapshot()
+        bpy.context.view_layer.objects.active = self.body
+        self.body.active_shape_key_index = mmd_model.SHAPE_KEY_NAMES.index("あ")
+        bpy.ops.object.mode_set(mode="EDIT")
+        mesh = bmesh.from_edit_mesh(self.body.data)
+        mesh.verts.ensure_lookup_table()
+        mesh.verts[VERTEX].co.x += 0.005
+        bmesh.update_edit_mesh(self.body.data)
+        for state in ("EDIT", "OBJECT"):
+            with self.subTest(mode=state):
+                bpy.ops.object.mode_set(mode=state)
+                after = take_snapshot()
+                self.assertEqual(self.body.mode, state)
+                np.testing.assert_array_equal(after.meshes["Body"].vertices, before.meshes["Body"].vertices)
+                np.testing.assert_array_equal(after.meshes["Body"].shape_keys["Basis"],
+                                              before.meshes["Body"].shape_keys["Basis"])
+                changes = diff_snapshots(before, after)
+                self.assertEqual([plain(c) for c in changes],
+                                 [("shape_keys", "Body", "versions.shape_key_changed", 1, True)])
+                self.assertEqual(changes[0].values["name"], "あ")
+                self.assertAlmostEqual(changes[0].values["distance_mm"], 5.0, delta=1e-3)
+        self.body.active_shape_key_index = 0
+
+    def test_armature_edit_mode_is_read_and_kept(self):
+        """アーマチュアの編集モードで動かした骨も、モードを変えずに記録に入る"""
+        before = take_snapshot()
+        bpy.context.view_layer.objects.active = self.armature
+        bpy.ops.object.mode_set(mode="EDIT")
+        bone = self.armature.data.edit_bones["頭"]
+        bone.head.z += 0.01
+        bone.tail.z += 0.01
+        after = take_snapshot()
+        self.assertEqual(self.armature.mode, "EDIT")
+        changes = diff_snapshots(before, after)
+        self.assertEqual([plain(c) for c in changes],
+                         [("bones", mmd_model.ARMATURE_NAME, "versions.bones_moved", 1, True)])
+        self.assertEqual(changes[0].values["names"], ("頭",))
+        self.assertAlmostEqual(changes[0].values["distance_mm"], 10.0, delta=1e-3)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        self.assertEqual(diff_snapshots(after, take_snapshot()), [])
+
+    def test_object_driver(self):
+        """オブジェクト自身（location など）のドライバーも記録に入る"""
+        before = take_snapshot()
+        self.body.driver_add("location", 0).driver.expression = "frame"
+        after = take_snapshot()
+        self.assertEqual([(d.owner, d.data_path, d.index, d.expression) for d in after.drivers],
+                         [("Body", "location", 0, "frame")])
+        changes = diff_snapshots(before, after)
+        self.assertEqual([plain(c) for c in changes], [("drivers", "Body", "versions.drivers_added", 1, True)])
+        self.assertEqual(changes[0].values["names"], ("location",))
 
     def test_edit_mode_is_read_and_kept(self):
         bpy.context.view_layer.objects.active = self.body

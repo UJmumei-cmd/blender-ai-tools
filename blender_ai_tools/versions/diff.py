@@ -9,7 +9,7 @@
 - 再現性の幅より小さい差は、変化として数えない（CLAUDE.md 7章・ロードマップ段階1 基準5）。
   長さ（頂点・シェイプキー・骨・オブジェクトの位置）は tolerance（ふつう thresholds.REPRO_TOLERANCE_LENGTH）より
   大きく動いた物だけ（ちょうどは含まない。measure.deformation.changed_vertices と同じ数え方）。
-  ウェイトは weight_tolerance（ふつう thresholds.WEIGHT_EPSILON）より大きく違う物だけ。
+  ウェイトは weight_tolerance（ふつう thresholds.REPRO_TOLERANCE_WEIGHT）より大きく違う物だけ。
   オブジェクトの回転・大きさ（行列の 3×3 の成分）は ratio_tolerance（ふつう thresholds.REPRO_TOLERANCE_RATIO）。
 - 名前で対応させる：オブジェクト・シェイプキー・頂点グループ・骨・モディファイア・ドライバー（持ち主・場所・番号）。
   名前を変えた物は「無くなった」と「増えた」の2つになる。
@@ -404,7 +404,7 @@ def _as_allowed(allowed: Any) -> AllowedChanges:
 
 def diff_snapshots(old: Snapshot, new: Snapshot, *, allowed: AllowedChanges | Mapping[str, Any] | None = None,
                    tolerance: float = thresholds.REPRO_TOLERANCE_LENGTH,
-                   weight_tolerance: float = thresholds.WEIGHT_EPSILON,
+                   weight_tolerance: float = thresholds.REPRO_TOLERANCE_WEIGHT,
                    ratio_tolerance: float = thresholds.REPRO_TOLERANCE_RATIO) -> list[Change]:
     """前の版（old）と新しい版（new）の記録の違い。並びは、オブジェクトの名前の順、その中は CATEGORIES の順。
 

@@ -4,6 +4,7 @@
   "bl_ext.user_default.blender_ai_tools" のような名前）。文字で書かず、__package__ から作る。
 - get_preferences は、拡張機能を設定から有効にしていないとき（テストでパッケージを直接読み込んだときなど）も、
   初めの値を持つ物を返す。
+- 画面の言語の初めの値は日本語（CLAUDE.md：画面は日本語）。「Blender に合わせる」（auto）と英語も選べる。
 - 項目の名前と説明（ツールチップ）は、登録するときの言語で作る（register_preferences）。
   設定の画面の文（draw）は、いまの言語で毎回作る。
 
@@ -25,12 +26,16 @@ from ..texts import text
 # 拡張機能のいちばん上のパッケージの名前（このファイルは <いちばん上>.ui.preferences）
 ADDON_ID = __package__.rpartition(".")[0]
 
-# 画面の言語の選び方："auto" は Blender の言語に合わせる
+# 画面の言語の選び方："auto" は Blender の言語に合わせる。初めの値は日本語（画面は日本語。CLAUDE.md 1章）
 LANGUAGE_AUTO = "auto"
+LANGUAGE_DEFAULT = "ja"
 LANGUAGE_CHOICES = (LANGUAGE_AUTO, *texts.LANGUAGES)
 
 # 作業フォルダを書いていないときに、.blend の横に作るフォルダの名前の後ろ（「<ファイルの名前>_ai_tools」）
 WORK_DIR_SUFFIX = "_ai_tools"
+
+# Mac の Blender.app（フォルダ）の中の、動かすファイルの場所
+MAC_APP_EXECUTABLE = ("Contents", "MacOS", "Blender")
 
 # Blender の画面の文の翻訳と重ならないようにする、文の分け方の名前（この名前の翻訳は無いので、文はそのまま出る）
 TRANSLATION_CONTEXT = "ai_tools"
@@ -67,7 +72,7 @@ class PreferenceValues:
     koumakan_repo: str = ""
     blender_path: str = ""
     work_dir: str = ""
-    language: str = LANGUAGE_AUTO
+    language: str = LANGUAGE_DEFAULT
 
 
 DEFAULTS = PreferenceValues()
@@ -96,9 +101,18 @@ def koumakan_repo_path(preferences: Any) -> Path | None:
 
 
 def blender_executable(preferences: Any) -> str:
-    """書き出しと裏の作業に使う Blender のファイル。書いていないときは、いま動いている Blender"""
+    """書き出しと裏の作業に使う Blender のファイル。書いていないときは、いま動いている Blender。
+
+    Mac で Blender.app（フォルダ）を選んだときは、その中の動かすファイル（Contents/MacOS/Blender）にする。
+    """
     value = preferences.blender_path.strip()
-    return _absolute(value) if value else bpy.app.binary_path
+    if not value:
+        return bpy.app.binary_path
+    path = _absolute(value)
+    inside = Path(path).joinpath(*MAC_APP_EXECUTABLE)
+    if Path(path).suffix.lower() == ".app" and inside.is_file():
+        return str(inside)
+    return path
 
 
 def work_dir_path(preferences: Any, blend_path: str | None = None) -> Path | None:
@@ -145,7 +159,7 @@ def _annotations() -> dict[str, Any]:
     return {
         "language": bpy.props.EnumProperty(
             name=text("screen.pref_language"), description=text("screen.pref_language_tip"),
-            items=_language_items(), default=LANGUAGE_AUTO, update=_language_changed,
+            items=_language_items(), default=LANGUAGE_DEFAULT, update=_language_changed,
             translation_context=TRANSLATION_CONTEXT),
         "koumakan_repo": bpy.props.StringProperty(
             name=text("screen.pref_koumakan_repo"), description=text("screen.pref_koumakan_repo_tip"),
@@ -182,11 +196,11 @@ def register_preferences() -> None:
 
 
 def unregister_preferences() -> None:
+    """設定のクラスを外す。登録していなければ何もしない（register が途中で失敗したあとでも、安全に呼べる）"""
     global _built_language
-    if _built_language is None:
-        return
     _built_language = None
-    bpy.utils.unregister_class(AIToolsPreferences)
+    if AIToolsPreferences.is_registered:
+        bpy.utils.unregister_class(AIToolsPreferences)
 
 
 # MARK: - 設定の画面

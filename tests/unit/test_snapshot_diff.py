@@ -10,6 +10,7 @@ import json
 import pickle
 import tempfile
 import unittest
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -281,6 +282,26 @@ class SnapshotFileTest(unittest.TestCase):
         self.assertIn("pickle", str(caught.exception))
         self.assertEqual(_UNPICKLED, [])
 
+    def test_corrupt_zip_is_a_value_error(self):
+        """zip として壊れた arrays.npz（sha256 は合わせてある）は ValueError（zipfile の例外をそのまま出さない）"""
+        save_snapshot(sample(), self.folder)
+        self.rewrite_arrays(lambda path: path.write_bytes(b"PK\x03\x04" + b"garbage" * 10))
+        with self.assertRaises(ValueError):
+            load_snapshot(self.folder)
+
+    def test_entries_that_are_not_arrays_are_rejected(self):
+        """.npy でない物が入った zip（NpzFile は bytes を返す）は ValueError（AttributeError で止まらない）"""
+        save_snapshot(sample(), self.folder)
+        for label, entries in {"raw .npy": (("a0.npy", b"not an npy"),), "no extension": (("a0", b"x"),)}.items():
+            with self.subTest(case=label):
+                def write(path, entries=entries):
+                    with zipfile.ZipFile(path, "w") as archive:
+                        for name, content in entries:
+                            archive.writestr(name, content)
+                self.rewrite_arrays(write)
+                with self.assertRaises(ValueError):
+                    load_snapshot(self.folder)
+
     def test_rejects_npy_instead_of_npz(self):
         save_snapshot(sample(), self.folder)
 
@@ -418,13 +439,13 @@ class DiffTest(unittest.TestCase):
     def test_weights_tolerance(self):
         base = [[(0, 1.0)]] * 4 + [[(0, 0.5), (1, 0.5)]] * 4
         small = list(base)
-        small[2] = [(0, 1.0 - 0.5 * thresholds.WEIGHT_EPSILON)]
+        small[2] = [(0, 1.0 - 0.5 * thresholds.REPRO_TOLERANCE_WEIGHT)]
         self.assertEqual(diff_snapshots(sample(), with_mesh(sample(), weights=WeightTable.from_lists(small))), [])
         large = list(base)
-        large[2] = [(0, 1.0 - 2 * thresholds.WEIGHT_EPSILON)]
+        large[2] = [(0, 1.0 - 2 * thresholds.REPRO_TOLERANCE_WEIGHT)]
         changes = diff_snapshots(sample(), with_mesh(sample(), weights=WeightTable.from_lists(large)))
         self.assertEqual([c.count for c in changes], [1])
-        self.assertAlmostEqual(changes[0].values["difference"], 2 * thresholds.WEIGHT_EPSILON, places=15)
+        self.assertAlmostEqual(changes[0].values["difference"], 2 * thresholds.REPRO_TOLERANCE_WEIGHT, places=15)
 
     def test_weights_compared_by_group_name(self):
         """頂点グループの並びを入れ替えただけなら、ウェイトは変わっていない"""
@@ -824,6 +845,21 @@ class HistoryTest(unittest.TestCase):
         changes, result = history.compare_versions(first, second, language="ja")
         self.assertEqual((changes, result.signal, result.value), ([], Signal.GRAY, None))
         self.assertTrue(result.reason.startswith("版 model_v001.blend の記録（形・骨・ウェイトなどの控え）が見つからないか、読めません："))
+
+    def test_unreadable_record_is_gray(self):
+        """記録の並びのファイルが zip として壊れていても（sha256 は合っている）、比べは灰になる（例外で止まらない）"""
+        first = self.save(1, sample())
+        second = self.save(2, sample())
+        folder = self.folder / "model_v001.snapshot"
+        (folder / ARRAYS_NAME).write_bytes(b"PK\x03\x04" + b"garbage" * 10)
+        data = json.loads((folder / JSON_NAME).read_text(encoding="utf-8"))
+        data["arrays_sha256"] = hashlib.sha256((folder / ARRAYS_NAME).read_bytes()).hexdigest()
+        (folder / JSON_NAME).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        changes, result = history.compare_versions(first, second, language="ja")
+        self.assertEqual((changes, result.signal, result.value), ([], Signal.GRAY, None))
+        self.assertIn("model_v001.blend", result.reason)
+        changes, result = history.compare_snapshot_with_version(sample(), first)
+        self.assertEqual((changes, result.signal), ([], Signal.GRAY))
 
     def test_compare_snapshot_with_version(self):
         version = self.save(1, sample())

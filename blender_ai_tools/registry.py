@@ -15,11 +15,11 @@ from .catalog import Catalog, Effect, ToolSpec
 
 MAP_BONE_NAMES = ToolSpec(
     id="bones.map_names",
-    version="1",
+    version="2",  # 版 2：結果に sway_extras（揺れ物の骨）を足した
     feature="A3",
     category="bones",
     title="骨の名前の対応",
-    summary="骨の名前を MMD 準標準の名前に対応させ、分からない骨・足りない骨・決められない骨を一覧にする",
+    summary="骨の名前を MMD 準標準の名前に対応させ、分からない骨・足りない骨・決められない骨・揺れ物の骨を一覧にする",
     effect=Effect.READ,
     heavy=False,
     input_schema={
@@ -46,6 +46,8 @@ def map_bone_names(params: dict[str, Any]) -> dict[str, Any]:
         "mapping": dict(result.mapping),
         "unknown": list(result.unknown),
         "known_extras": list(result.known_extras),
+        # known_extras のうち、揺れ物・飾りの骨（髪・スカート など）。報告の「揺れ物の骨 N 本」に使う
+        "sway_extras": list(result.sway_extras),
         "conflicts": {canonical: list(names) for canonical, names in result.conflicts.items()},
         "ambiguous": {name: list(candidates) for name, candidates in result.ambiguous.items()},
         "shadowed": dict(result.shadowed),

@@ -25,7 +25,7 @@ def apply_language(choice: str | None = None) -> str:
     """画面の文の言語を決めて、登録してあるパネルと操作の名前を作り直す。決めた言語（"ja"・"en"）を返す。
 
     choice：設定の言語の選び方（"auto"・"ja"・"en"）。None なら、いまの設定を使う
-    （拡張機能を設定から有効にしていないときは、初めの値 "auto"）。
+    （拡張機能を設定から有効にしていないときは、初めの値 "ja"。画面は日本語が元）。
     """
     if choice is None:
         choice = preferences.get_preferences().language
