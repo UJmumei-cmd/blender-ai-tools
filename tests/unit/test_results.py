@@ -52,5 +52,42 @@ class MeasurementTest(unittest.TestCase):
         self.assertTrue(gray.reason)
 
 
+class MeasurementDataTest(unittest.TestCase):
+    """JSON にする形（to_data / from_data）"""
+
+    def test_round_trip(self):
+        original = Measurement("penetration_depth", 0.0012, "m", Signal.RED, "深い",
+                               {"count": 3, "worst": [1, 2], "nested": {"ok": True, "none": None}})
+        data = original.to_data()
+        self.assertEqual(data["signal"], "red")
+        self.assertEqual(data["value"], 0.0012)
+        self.assertEqual(Measurement.from_data(data), original)
+        self.assertEqual(Measurement.from_data(Measurement.unmeasured("x", "count", "理由").to_data()).signal,
+                         Signal.GRAY)
+
+    def test_numpy_and_tuples_become_plain(self):
+        import numpy as np
+
+        details = {"mask": np.array([True, False]), "ids": np.arange(3, dtype=np.int64), "pair": (1.5, 2.5),
+                   "scalar": np.float64(0.25), "nan": math.nan, "signal": Signal.YELLOW}
+        data = Measurement("x", 1.0, "m", Signal.GREEN, details=details).to_data()
+        self.assertEqual(data["details"], {"mask": [True, False], "ids": [0, 1, 2], "pair": [1.5, 2.5],
+                                           "scalar": 0.25, "nan": None, "signal": "yellow"})
+        self.assertEqual(Measurement("x", 1.0, "m", Signal.GREEN, details=details).to_data(include_details=False)["details"], {})
+
+    def test_unconvertible_details_raise(self):
+        with self.assertRaises(TypeError):
+            Measurement("x", 1.0, "m", Signal.GREEN, details={"bad": {1, 2}}).to_data()
+        with self.assertRaises(TypeError):
+            Measurement("x", 1.0, "m", Signal.GREEN, details={1: "キーが数"}).to_data()
+
+    def test_from_data_rejects_bad_shapes(self):
+        good = Measurement("x", 1.0, "m", Signal.GREEN).to_data()
+        for bad in ([], {**good, "signal": "blue"}, {**good, "signal": 3}, {**good, "extra": 1},
+                    {**good, "value": "1"}, {**good, "value": True}, {**good, "details": []},
+                    {**good, "value": None}):  # 値が無いのに緑は、Measurement 自身が断る
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                Measurement.from_data(bad)
+
 if __name__ == "__main__":
     unittest.main()

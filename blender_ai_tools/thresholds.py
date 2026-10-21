@@ -42,6 +42,15 @@ POSE_MOVED_TOLERANCE = 1e-6
 # convert_blend.py を待つ時間の上限（秒）。過ぎたら止めて、失敗として報告する（仮）
 CONVERT_TIMEOUT_SECONDS = 600.0
 
+# MARK: - 裏で動かす係（A10）
+
+# 進み具合を読みに行く間隔（秒）。画面のタイマーで、裏の Blender が書く progress.json を読む（仮）
+JOB_POLL_INTERVAL_SECONDS = 1.0
+# 中止を頼んでから、裏の Blender が自分で終わるのを待つ時間（秒）。過ぎたら止める（terminate → さらに同じ時間で kill）（仮）
+JOB_CANCEL_GRACE_SECONDS = 10.0
+# 1つの仕事を待つ時間の上限（秒）。過ぎたら中止と同じ手順で止め、失敗として記録する（仮。夜のじっくり点検では長くする）
+JOB_TIMEOUT_SECONDS = 4.0 * 3600.0
+
 # MARK: - 再現性（A15）
 
 # 同じ入力を2回測ったときに許す差。これより小さい差は、変化として数えない（仮）

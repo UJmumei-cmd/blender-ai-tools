@@ -473,6 +473,15 @@ _OPTIONAL_KEYS = frozenset({"catalog_fingerprint", "convert_blend", "notes"})
 # MARK: - JSON にする・読む
 
 
+def to_plain(value: Any, where: str = "") -> Any:
+    """JSON にそのまま書ける物（dict・list・str・int・float・bool・None）にする。RunRecord.to_json と同じ決まり。
+
+    numpy の数は Python の数、配列は入れ子のリスト、タプルはリスト、Path は文字、NaN と ±inf は None。
+    できない型は TypeError（where は、まちがいの場所を伝えるための名前）。裏の係（A10）が結果を書くときにも使う。
+    """
+    return _to_plain(value, where)
+
+
 def _to_plain(value: Any, where: str) -> Any:
     """JSON にできる物（dict・list・str・int・float・bool・None）にする。できない型は TypeError"""
     if value is None:
