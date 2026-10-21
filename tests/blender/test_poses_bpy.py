@@ -141,6 +141,69 @@ class ApplyPoseTest(PoseBpyTestCase):
             low = min(float(posed[:, 2, 3].min()), float(tails[:, 2].min()))
         self.assertAlmostEqual(low, rest_low, delta=1e-6)
 
+    def test_grounding_by_bones_on_a_moved_and_scaled_armature(self):
+        """メッシュ無しの床合わせ（形を動かす骨の根元と先）は、アーマチュアの大きさが 1 でなくても、休みの高さに合わせる。
+        骨の先は、ポーズの行列（世界）に、アーマチュアの中の骨の長さを当てた物（大きさを二重に掛けない）"""
+        self.armature.location = (0.0, 0.0, 0.3)
+        self.armature.scale = (2.0, 2.0, 2.0)
+        bpy.context.view_layer.update()
+        rest_world = extract_bpy.bone_rest(self.armature)
+        rest_arm = extract_bpy.bone_rest(self.armature, space="armature")
+        deform = np.flatnonzero(rest_world.deform)
+        rest_low = min(float(rest_world.heads[deform][:, 2].min()), float(rest_world.tails[deform][:, 2].min()))
+        self.assertAlmostEqual(rest_low, 0.3 + 2.0 * 0.01, places=6)  # 左足首D の先（つま先、z = 0.01）が、いちばん低い
+        lengths = np.linalg.norm(rest_arm.tails[deform] - rest_arm.heads[deform], axis=1)
+        with poses_bpy.posing(self.armature):
+            applied = poses_bpy.apply_pose(self.armature, pose_by_name("squat"))
+            self.assertEqual(applied.grounded_by, "bones")
+            posed = extract_bpy.pose_matrices(self.armature)[0][deform]
+            tails = posed[:, :3, 3] + posed[:, :3, 1] * lengths[:, None]
+            low = min(float(posed[:, 2, 3].min()), float(tails[:, 2].min()))
+        self.assertAlmostEqual(low, rest_low, delta=1e-6)
+        self.assertLess(applied.ground_shift, 0.0)
+
+    def test_center_without_local_location_is_grounded_and_offset(self):
+        """センター の「ローカルの位置」（use_local_location）が切れていても、床に合わせる量と座る量は同じになる。
+        Blender は、切れている骨の位置を親のポーズの向きで当てる（根の骨ならアーマチュアの向き）"""
+        self.armature.data.bones["センター"].use_local_location = False
+        floor = float(extract_bpy.mesh_evaluated(self.body)[:, 2].min())
+        rest = extract_bpy.bone_rest(self.armature, space="armature")
+        rest_center = rest.heads[rest.index("センター")]
+        with poses_bpy.posing(self.armature):
+            applied = poses_bpy.apply_pose(self.armature, pose_by_name("squat"), ground_meshes=[self.body],
+                                           floor_z=floor)
+            lowest = float(extract_bpy.mesh_evaluated(self.body)[:, 2].min())
+            self.assertAlmostEqual(lowest, floor, delta=thresholds.REPRO_TOLERANCE_LENGTH)
+            self.assertLess(applied.ground_shift, 0.0)
+            applied = poses_bpy.apply_pose(self.armature, pose_by_name("chair_sit"))
+            moved = extract_bpy.joint_positions(self.armature, ["センター"])[0][0] - rest_center
+            np.testing.assert_allclose(moved, [0.0, 0.0, -0.45 * applied.leg_length + applied.ground_shift], atol=1e-6)
+        # 根の骨（全ての親）の位置は、アーマチュアの向きのまま当たる：横になる姿勢の床合わせも同じ
+        self.armature.data.bones["全ての親"].use_local_location = False
+        with poses_bpy.posing(self.armature):
+            poses_bpy.apply_pose(self.armature, pose_by_name("lying_back"), ground_meshes=[self.body], floor_z=floor)
+            lowest = float(extract_bpy.mesh_evaluated(self.body)[:, 2].min())
+        self.assertAlmostEqual(lowest, floor, delta=thresholds.REPRO_TOLERANCE_LENGTH)
+
+    def test_lying_poses_lay_the_body_down(self):
+        """横になる姿勢：頭と足の高さがほぼ同じになり、あおむけでは顔が上を向き、横向きではキャラの左が下になる"""
+        def centers(*names):
+            return [self.part_points(*group).mean(axis=0) for group in names]
+
+        with poses_bpy.posing(self.armature):
+            poses_bpy.apply_pose(self.armature, pose_by_name("lying_back"), ground_meshes=[self.body])
+            head, nose, feet = centers(("head",), ("nose",), ("foot_L", "foot_R"))
+            self.assertLess(abs(float(head[2] - feet[2])), 0.1)  # 体が横になっている
+            self.assertGreater(float(nose[2]), float(head[2]))  # 顔が上を向く
+            self.assertGreater(float(head[1] - feet[1]), 1.0)  # 頭は +Y の側（前（-Y）が上を向くように回した）
+            poses_bpy.apply_pose(self.armature, pose_by_name("lying_side"), ground_meshes=[self.body])
+            head, nose, feet, hand_left, hand_right = centers(("head",), ("nose",), ("foot_L", "foot_R"), ("hand_L",),
+                                                              ("hand_R",))
+            self.assertLess(abs(float(head[2] - feet[2])), 0.05)
+            self.assertGreater(float(head[0] - feet[0]), 1.0)  # 頭は +X の側（キャラの左が下を向くように回した）
+            self.assertLess(float(hand_left[2]), float(hand_right[2]))  # 左手が下、右手が上
+            self.assertLess(float(nose[1]), float(head[1]))  # 前は -Y のまま
+
     def test_center_offset_uses_leg_length(self):
         rest = extract_bpy.bone_rest(self.armature, space="armature")
         leg = poses.leg_length_from_bones(rest.names, rest.heads)

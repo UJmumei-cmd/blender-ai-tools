@@ -2,6 +2,8 @@
 
 仕事のフォルダ：<root>/<job_id>/ に job.json・progress.json・result.json・log.txt（裏の Blender の出力）・cancel。
 同時に動かすのは1つ（CPU とメモリを使い切らないため）。画面の側はタイマーで poll() を呼ぶだけで、待たない。
+1つの root には JobQueue を1つだけ作る（2つ作ると、どちらも「動いている物は無い」と思って2つ始めてしまう）。
+前の回の画面が始めた裏の Blender がまだ動いているときは（progress.json の pid が生きている）、終わるまで次を始めない。
 """
 
 from __future__ import annotations
@@ -18,7 +20,46 @@ from typing import IO, Any
 from .. import provenance, thresholds
 from .progress import (CANCEL_FILE, LOG_FILE, Progress, cancel_requested, read_progress, request_cancel,
                        write_progress)
-from .spec import JOB_FILE, JobSpec, load_job, save_job
+from .spec import JOB_FILE, JobSpec, is_job_id, load_job, save_job
+
+# Windows の OpenProcess・WaitForSingleObject に渡す値
+_SYNCHRONIZE = 0x00100000
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_WAIT_TIMEOUT = 0x00000102
+_ERROR_ACCESS_DENIED = 5
+
+
+def pid_alive(pid: Any) -> bool:
+    """そのプロセス番号が、いま動いているか。分からない形（None・0・負の数）は「動いていない」。
+
+    POSIX は os.kill(pid, 0)（信号は送らない。別のユーザーの物でも「動いている」）。
+    Windows の os.kill は番号 0 でもプロセスを終わらせてしまうので、ctypes の OpenProcess + WaitForSingleObject で見る。
+    """
+    if type(pid) is not int or pid <= 0:
+        return False
+    if os.name == "nt":
+        return _pid_alive_windows(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _pid_alive_windows(pid: int) -> bool:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    handle = kernel32.OpenProcess(_SYNCHRONIZE | _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # 開けない：番号が無い（動いていない）か、別のユーザーの物（動いている）
+        return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == _WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 @dataclass
@@ -102,11 +143,15 @@ class JobQueue:
     # MARK: - 仕事の一覧
 
     def job_dir(self, job_id: str) -> Path:
+        """仕事のフォルダ。id の形が違う（「../」など root の外を指しうる物）ときは ValueError"""
+        if not is_job_id(job_id):
+            raise ValueError(f"仕事の id の形が違います（英数字・_・- の 1〜64 文字。いまは {job_id!r}）")
         return self.root / job_id
 
     def enqueue(self, job: JobSpec) -> Path:
         """仕事を順番待ちに入れる（フォルダを作り、job.json と「順番待ち」の progress.json を書く）"""
         folder = self.job_dir(job.job_id)
+        self.root.mkdir(parents=True, exist_ok=True)
         try:
             folder.mkdir(parents=False, exist_ok=False)
         except FileExistsError as error:
@@ -119,6 +164,8 @@ class JobQueue:
         """すべての仕事（作った時刻の順）。読めないフォルダは unreadable に入れて飛ばす"""
         found: list[tuple[JobSpec, Progress]] = []
         self.unreadable = {}
+        if not self.root.is_dir():
+            return found  # root が消されていても落ちない（enqueue が作り直す）
         for folder in sorted(self.root.iterdir()):
             if not folder.is_dir() or not (folder / JOB_FILE).is_file():
                 continue
@@ -142,21 +189,42 @@ class JobQueue:
     # MARK: - 始める・見る・止める
 
     def recover(self) -> list[str]:
-        """画面を開き直したあとに呼ぶ。前の回に「動いています」のまま残った仕事を、失敗（結果なし）にする。
-        戻り値は、そうした仕事の id"""
+        """画面を開き直したあとに呼ぶ。前の回に「動いています」のまま残った仕事のうち、裏の Blender がもう動いていない物を、
+        失敗（結果なし）にする。戻り値は、そうした仕事の id。
+
+        裏の Blender がまだ動いている物（pid が生きている）はそのまま残す：自分で終わりと結果を書くので、失敗にしない。
+        その間は start_next() が次の仕事を始めない（同時に動くのは1つ）。中止は cancel() で頼める。
+        """
         orphaned = []
-        for job, progress in self.jobs():
-            if progress.status == "running" and (self._running is None or self._running.job.job_id != job.job_id):
-                write_progress(self.job_dir(job.job_id), replace(
-                    progress, status="failed", updated_at=provenance.now_iso(), finished_at=provenance.now_iso(),
-                    error_key="jobs.error_orphaned", error_values={}, pid=None))
+        for job, progress in self._foreign_running():
+            if not pid_alive(progress.pid):
+                self._mark_orphaned(job.job_id, progress)
                 orphaned.append(job.job_id)
         return orphaned
 
+    def _foreign_running(self) -> list[tuple[JobSpec, Progress]]:
+        """「動いています」のまま残っている仕事で、この JobQueue が始めた物ではない物（前の回の画面が始めた物）"""
+        mine = None if self._running is None else self._running.job.job_id
+        return [(job, progress) for job, progress in self.jobs()
+                if progress.status == "running" and job.job_id != mine]
+
+    def _mark_orphaned(self, job_id: str, progress: Progress) -> None:
+        now = provenance.now_iso()
+        write_progress(self.job_dir(job_id), replace(progress, status="failed", updated_at=now, finished_at=now,
+                                                     error_key="jobs.error_orphaned", error_values={}, pid=None))
+
     def start_next(self) -> JobSpec | None:
-        """何も動いていなければ、いちばん古い順番待ちの仕事を始める。始めた仕事を返す（無ければ None）"""
+        """何も動いていなければ、いちばん古い順番待ちの仕事を始める。始めた仕事を返す（無ければ None）。
+
+        前の回の画面が始めた裏の Blender がまだ動いていれば、始めない（None）。それが「終わり」を書かずに消えていれば、
+        失敗（結果なし）にしてから始める。
+        """
         if self._running is not None:
             return None
+        for job, progress in self._foreign_running():
+            if pid_alive(progress.pid):
+                return None
+            self._mark_orphaned(job.job_id, progress)
         for job, progress in self.jobs():
             if progress.status != "queued":
                 continue
@@ -186,7 +254,8 @@ class JobQueue:
         folder = running.job_dir
         try:
             progress = read_progress(folder)
-        except ValueError:
+        except (ValueError, OSError):
+            # 書きかけ・壊れている・いま読めない（Windows の共有違反など）：この回は「動いています」とだけ見る
             progress = None
         if progress is None:
             progress = Progress(status="running", updated_at=provenance.now_iso())
@@ -194,8 +263,11 @@ class JobQueue:
         now = self._clock()
         if code is None:
             if running.cancel_at is None and now - running.started_at >= self.timeout:
+                # 時間の上限：中止を頼む（「終わり」を書いたあとなら頼む物は無い）。猶予のあと terminate → kill
                 running.timed_out = True
-                self.cancel(running.job.job_id)
+                running.cancel_at = now
+                if not progress.is_finished:
+                    request_cancel(folder)
             if running.cancel_at is not None:
                 if running.terminated_at is None and now - running.cancel_at >= self.grace:
                     running.worker.process.terminate()
@@ -205,6 +277,7 @@ class JobQueue:
                     running.killed = True
             return progress
         running.worker.close_log()
+        self._running = None  # 片付けの途中で書けなくても、消えたプロセスを「動いている」と思い続けない
         if not progress.is_finished:
             stamp = provenance.now_iso()
             if running.timed_out:
@@ -222,7 +295,6 @@ class JobQueue:
             progress = replace(progress, status="failed", updated_at=stamp, error_key="jobs.error_timeout",
                                error_values={"seconds": int(self.timeout)})
             write_progress(folder, progress)
-        self._running = None
         return progress
 
     def cancel(self, job_id: str) -> Progress:
@@ -232,6 +304,9 @@ class JobQueue:
             raise ValueError(f"その仕事はありません：{job_id}")
         progress = read_progress(folder)
         running = self._running is not None and self._running.job.job_id == job_id
+        if running and progress is not None and progress.is_finished:
+            # 「終わり」を書いたあと、プロセスが消えるまでの間：もう中止する物は無い（印も付けず、terminate もしない）
+            return progress
         if running:
             # 動いている（進み具合がまだ「順番待ち」のままでも）：中止を頼み、裏の係が自分で止まるのを待つ
             request_cancel(folder)
@@ -276,4 +351,4 @@ class JobQueue:
             return handle.read().decode("utf-8", errors="replace")
 
 
-__all__ = ["JobQueue", "Runner", "WorkerProcess", "blender_runner", "build_worker_command", "CANCEL_FILE"]
+__all__ = ["JobQueue", "Runner", "WorkerProcess", "blender_runner", "build_worker_command", "pid_alive", "CANCEL_FILE"]

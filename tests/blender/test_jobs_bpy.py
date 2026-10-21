@@ -1,5 +1,9 @@
 """裏で動かす係（A10）を、本物の別の Blender で確かめる"""
 
+import contextlib
+import io
+import os
+import stat
 import tempfile
 import time
 import unittest
@@ -30,6 +34,19 @@ class LauncherTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             launcher_bpy.blender_binary("/nowhere/blender")
 
+    def test_blender_binary_accepts_mac_app_bundle(self):
+        """設定に Blender.app（フォルダ）が書いてあれば、その中の実行ファイルを使う"""
+        with tempfile.TemporaryDirectory() as folder:
+            bundle = Path(folder) / "Blender.app"
+            binary = bundle / "Contents" / "MacOS" / "Blender"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+            self.assertEqual(launcher_bpy.blender_binary(bundle), str(binary))
+            self.assertEqual(launcher_bpy.blender_binary(binary), str(binary))
+            with self.assertRaises(ValueError):
+                launcher_bpy.blender_binary(Path(folder) / "Other.app")
+
     def test_default_jobs_root(self):
         with tempfile.TemporaryDirectory() as folder:
             self.assertEqual(launcher_bpy.default_jobs_root(folder), Path(folder) / "jobs")
@@ -38,6 +55,52 @@ class LauncherTest(unittest.TestCase):
         job = launcher_bpy.make_job("bones.map_names", {"names": ["左腕"]}, input_blend=None)
         self.assertEqual(job.autoexec, bool(bpy.context.preferences.filepaths.use_scripts_auto_execute))
         self.assertEqual(job.tool_id, "bones.map_names")
+        self.assertIsNone(job.input_blend)
+
+    def test_make_job_makes_input_absolute(self):
+        """裏の Blender は別の cwd で動くので、入力の場所は絶対にして渡す（「//」の相対の場所も）"""
+        job = launcher_bpy.make_job("bones.map_names", {"names": ["左腕"]}, input_blend="model_v001.blend")
+        self.assertTrue(os.path.isabs(job.input_blend))
+        self.assertEqual(job.input_blend, os.path.abspath("model_v001.blend"))
+        job = launcher_bpy.make_job("bones.map_names", {"names": ["左腕"]}, input_blend=Path("/tmp") / "x.blend")
+        self.assertEqual(job.input_blend, os.path.abspath(os.path.join("/tmp", "x.blend")))
+        relative = launcher_bpy.make_job("bones.map_names", {"names": ["左腕"]}, input_blend="//x.blend")
+        self.assertTrue(os.path.isabs(relative.input_blend))
+        self.assertNotIn("//x", relative.input_blend.replace(os.sep, "/")[1:])  # 「//」が解かれている
+
+    def test_tick_survives_exceptions(self):
+        """タイマーの1回で例外が起きても、次の間隔を返す（例外を上げると Blender がタイマーを外し、順番待ちが止まる）"""
+        class BrokenQueue:
+            def __init__(self):
+                self.polls = 0
+
+            def poll(self):
+                self.polls += 1
+                raise OSError("読めません")
+
+            def start_next(self):
+                raise AssertionError("poll が失敗したら、この回は start_next を呼ばない")
+
+        updates = []
+        broken = BrokenQueue()
+        tick = launcher_bpy.make_tick(broken, interval=0.25, on_update=lambda: updates.append(1))
+        with contextlib.redirect_stderr(io.StringIO()) as captured:
+            self.assertEqual(tick(), 0.25)
+            self.assertEqual(tick(), 0.25)
+        self.assertEqual(broken.polls, 2)
+        self.assertIn("読めません", captured.getvalue())
+        self.assertEqual(updates, [])
+
+        class QuietQueue:
+            def poll(self):
+                return None
+
+            def start_next(self):
+                return None
+
+        tick = launcher_bpy.make_tick(QuietQueue(), interval=0.5, on_update=lambda: updates.append(1))
+        self.assertEqual(tick(), 0.5)
+        self.assertEqual(updates, [1])
 
     def test_start_and_stop_polling(self):
         with tempfile.TemporaryDirectory() as folder:

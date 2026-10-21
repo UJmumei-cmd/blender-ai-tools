@@ -62,6 +62,20 @@ def fail_tool(params: dict) -> dict:
     raise ValueError("わざと失敗しました")
 
 
+def swallow_tool(params: dict) -> dict:
+    """何でも握りつぶす道具（except Exception）。cancel_at_step 段で、自分で中止を頼む（画面の側の代わり）。
+    中止が Exception の子だと、ここで握りつぶされて最後まで動いてしまう"""
+    steps, cancel_at_step = params["steps"], params["cancel_at_step"]
+    for step in range(1, steps + 1):
+        try:
+            progress.report(step, steps, "jobs.step_of", {"step": step, "total": steps})
+            if step == cancel_at_step:
+                progress.request_cancel(progress.current_job_dir())
+        except Exception:  # noqa: BLE001  わざと何でも受け止める
+            pass
+    return {"steps": steps}
+
+
 def modify_tool(params: dict) -> dict:
     """「変更」の道具（確認が要る）"""
     return {"modified": True}
@@ -75,6 +89,8 @@ def build_fake_catalog() -> Catalog:
         ("fake.crash", "落ちる", Effect.READ, _schema({"code": _INT}, ["code"]), crash_tool),
         ("fake.touch_input", "入力を書き換える", Effect.READ, _schema({"path": _TEXT}, ["path"]), touch_input_tool),
         ("fake.fail", "失敗する", Effect.READ, _schema({}, []), fail_tool),
+        ("fake.swallow", "何でも握りつぶす", Effect.READ, _schema({"steps": _INT, "cancel_at_step": _INT}, ["steps", "cancel_at_step"]),
+         swallow_tool),
         ("fake.modify", "変更する", Effect.MODIFY, _schema({}, []), modify_tool),
     ]
     for tool_id, title, effect, schema, func in tools:

@@ -28,6 +28,7 @@ import bpy
 import numpy as np
 
 from .. import bones, texts
+from ..jobs import progress
 from ..measure.geometry import PENETRATION_NAME
 from ..measure.kinematics import FLOOR_SINK_NAME, REVERSE_BEND_NAME
 from ..measure.results import Measurement
@@ -340,7 +341,10 @@ def run_course(scene: Any = None, *, poses: Sequence[PoseSpec] = POSES, checks: 
         readable_body = [role for role in body_roles if role.obj.name not in rest_shapes.unreadable]
         ground_meshes = [role.obj for role in readable_body] if floor_z is not None else []
         ground_masks = [role.body_vertices for role in readable_body] if floor_z is not None else None
-        for pose in pose_list:
+        for index, pose in enumerate(pose_list):
+            # 裏の係（A10）の中なら進み具合を書く（中止が頼まれていれば JobCancelled が上がり、posing() が元に戻す）。
+            # 画面の中では何もしない
+            progress.report(index, len(pose_list), "motion.progress_pose", {"pose": course.pose_label(pose.name)})
             try:
                 applied = poses_bpy.apply_pose(armature, pose, leg_length=leg_length, ground_meshes=ground_meshes,
                                                ground_vertex_masks=ground_masks, floor_z=floor_z)

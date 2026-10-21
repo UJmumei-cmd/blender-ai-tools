@@ -78,6 +78,7 @@ def run_job(job: JobSpec, catalog: Catalog, job_dir: str | os.PathLike[str], *,
         if before is None:
             return reporter.finish("failed", error_key="jobs.error_input_missing", path=str(input_path))
     try:
+        reporter.check_cancel()  # もう中止されていれば、重い .blend を開く前に止まる
         if open_input is not None and input_path is not None:
             open_input(input_path)
         reporter.check_cancel()

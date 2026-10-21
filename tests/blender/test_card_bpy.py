@@ -648,8 +648,10 @@ class CheckCardTest(CardCase):
         self.assertEqual((check.reasons, check.notes), (["Skirt の形が変わりました"], [MOVED_NOTE]))
 
     def test_tilted_or_scaled_armature_needs_remeasure(self):
+        # 縦横だけの大きさ（上向きの行はそのまま）も、世界の長さが変わるので測り直し
         for label, options in (("tilt", {"rotation": (math.radians(30.0), 0.0, 0.0)}),
-                               ("scale", {"rotation": (0.0, 0.0, 0.0), "scale": (1.1, 1.1, 1.1)})):
+                               ("scale", {"rotation": (0.0, 0.0, 0.0), "scale": (1.1, 1.1, 1.1)}),
+                               ("x scale", {"rotation": (0.0, 0.0, 0.0), "scale": (1.5, 1.0, 1.0)})):
             with self.subTest(change=label):
                 self.move_armature(location=(0.0, 0.0, 0.0), **options)
                 check = check_card()
@@ -661,6 +663,38 @@ class CheckCardTest(CardCase):
         bpy.context.view_layer.update()
         check = check_card()
         self.assertEqual((check.reasons, check.notes), (["Skirt の形が変わりました"], []))
+
+    def test_root_empty_parent(self):
+        """mmd_tools の読み込みのように、アーマチュアが Empty（root）の子：root を動かす・Z まわりに回すのは知らせだけ。
+        root を傾ける・大きさを変えるのは測り直し（世界の高さと長さが変わる）。指紋はどれも変わらない"""
+        root = bpy.data.objects.new("root", None)
+        bpy.context.scene.collection.objects.link(root)
+        self.armature.parent = root
+        bpy.context.view_layer.update()
+        self.assertEqual((check_card().reasons, check_card().notes), ([], []))
+        root.location = (2.0, -1.0, 0.5)
+        root.rotation_euler = (0.0, 0.0, math.radians(135.0))
+        bpy.context.view_layer.update()
+        check = check_card()
+        self.assertEqual((check.reasons, check.notes), ([], [MOVED_NOTE]))
+        moved = build_card()
+        self.assertEqual(moved.fingerprints, self.card.fingerprints)
+        self.assertEqual(moved.measurements["joints"], self.card.measurements["joints"])
+        np.testing.assert_array_equal(moved.placement_matrix(), np.array(self.armature.matrix_world))
+        self.assertAlmostEqual(moved.value(HEIGHT), self.card.value(HEIGHT), delta=1e-6)
+        self.assertAlmostEqual(moved.value(LEG_LENGTH["L"]), self.card.value(LEG_LENGTH["L"]), delta=1e-6)
+        root.rotation_euler = (math.radians(20.0), 0.0, 0.0)
+        bpy.context.view_layer.update()
+        self.assertEqual((check_card().reasons, check_card().notes), ([RESIZED], []))
+        root.rotation_euler = (0.0, 0.0, 0.0)
+        root.scale = (0.08, 0.08, 0.08)  # MMD の大きさ（1 単位 ≒ 8 cm）を root で付けた置き方
+        bpy.context.view_layer.update()
+        self.assertEqual(check_card().reasons, [RESIZED])
+        small = build_card()
+        self.assertEqual(small.fingerprints, self.card.fingerprints)
+        self.assertAlmostEqual(small.value(HEIGHT), 0.08 * self.card.value(HEIGHT), delta=1e-6)
+        self.assertAlmostEqual(small.value(LEG_LENGTH["L"]), 0.08 * self.card.value(LEG_LENGTH["L"]), delta=1e-6)
+        self.assertEqual(small.value(ARM_REST_DOWN["L"]), self.card.value(ARM_REST_DOWN["L"]))
 
     def test_meshes_added_removed_and_armature_renamed(self):
         self.add_mesh("Ribbon", 1.3, 1.35)

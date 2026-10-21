@@ -136,11 +136,18 @@ def _ground_masks(meshes: Sequence[Any], masks: Sequence[Any] | None) -> list[np
     return result
 
 
-def _bone_points(rest: extract_bpy.BoneRest, posed_world: np.ndarray) -> np.ndarray:
-    """形を動かす骨（無ければ全部の骨）の、根元と先の世界の位置 (2K, 3)。posed_world はアーマチュアの骨の行列（世界）"""
+def _bone_points(rest: extract_bpy.BoneRest, matrices_world: np.ndarray) -> np.ndarray:
+    """形を動かす骨（無ければ全部の骨）の、根元と先の世界の位置 (2K, 3)。
+
+    rest はアーマチュアの中の休みの形（骨の長さと、形を動かす骨の印に使う）。matrices_world は、その骨の行列（世界。
+    休みの行列でもポーズの行列でもよい）。先 = 行列 @ (0, アーマチュアの中の骨の長さ, 0)。
+    行列の Y の列にはアーマチュアの大きさが入っているので、世界の長さを掛けると大きさが二重に掛かってしまう
+    """
+    if rest.space != "armature":
+        raise ValueError("rest はアーマチュアの中の休みの形（space=\"armature\"）にしてください")
     selected = np.flatnonzero(rest.deform) if rest.deform.any() else np.arange(rest.bone_count)
     lengths = np.linalg.norm(rest.tails[selected] - rest.heads[selected], axis=1)
-    matrices = posed_world[selected]
+    matrices = matrices_world[selected]
     heads = matrices[:, :3, 3]
     tails = heads + matrices[:, :3, 1] * lengths[:, None]
     return np.concatenate([heads, tails])
@@ -151,12 +158,13 @@ def _location_basis(armature: Any, rest: extract_bpy.BoneRest, posed: np.ndarray
 
     Blender（armature.cc の BKE_bone_parent_transform_calc_from_matrices）：骨の位置は
     親のポーズ @ (親の休み⁻¹ @ 休み) の向きで当たる（根の骨は休みの向き）。
-    「ローカルの位置」を使わない骨（use_local_location が False）は、アーマチュアの向きのまま当たる。
+    「ローカルの位置」を使わない骨（use_local_location が False）は、親のポーズの向き（アーマチュアの中。親の休みの向きを
+    含む）で当たる。根の骨なら、アーマチュアの向きのまま当たる。
     """
-    if not armature.data.bones[rest.names[index]].use_local_location:
-        return np.eye(3)
-    own = rest.matrices[index, :3, :3]
     parent = int(rest.parents[index])
+    if not armature.data.bones[rest.names[index]].use_local_location:
+        return np.eye(3) if parent < 0 else np.array(posed[parent, :3, :3], dtype=np.float64)
+    own = rest.matrices[index, :3, :3]
     if parent < 0:
         return own
     return posed[parent, :3, :3] @ np.linalg.inv(rest.matrices[parent, :3, :3]) @ own
@@ -221,14 +229,20 @@ def apply_pose(armature: Any, pose: PoseSpec, *, leg_length: float | None = None
             reference = float(floor_z) if floor_z is not None else _lowest_mesh_z(meshes, masks)
         else:
             rest_world = extract_bpy.bone_rest(armature, space="world")
-            reference = float(_bone_points(rest_world, rest_world.matrices)[:, 2].min())
+            reference = float(_bone_points(rest, rest_world.matrices)[:, 2].min())
 
     resolved = poses.resolve_pose(pose, rest.names, rest.matrices, leg_length=used_leg)
     if resolved.rotations:
         extract_bpy.set_pose(armature, resolved.rotations)
     pose_bones = armature.pose.bones
     if resolved.center is not None and any(v != 0.0 for v in resolved.center_location):
-        pose_bones[resolved.center].location = resolved.center_location
+        # resolve_pose の位置は、骨のローカル（休みの向き）。Blender が位置を当てる向き（_location_basis）に直す。
+        # 「ローカルの位置」を使う骨で、親が休みの姿勢なら、同じ値のまま
+        index = rest.index(resolved.center)
+        in_armature = rest.matrices[index, :3, :3] @ np.asarray(resolved.center_location, dtype=np.float64)
+        posed = extract_bpy.pose_matrices(armature, space="armature")[0]
+        local = np.linalg.solve(_location_basis(armature, rest, posed, index), in_armature)
+        pose_bones[resolved.center].location = tuple(float(v) for v in local)
         bpy.context.view_layer.update()
 
     shift = None
@@ -238,9 +252,8 @@ def apply_pose(armature: Any, pose: PoseSpec, *, leg_length: float | None = None
             lowest = _lowest_mesh_z(meshes, masks)
             grounded_by = "mesh"
         else:
-            rest_world = extract_bpy.bone_rest(armature, space="world")
             posed_world = extract_bpy.pose_matrices(armature, space="world")[0]
-            lowest = float(_bone_points(rest_world, posed_world)[:, 2].min())
+            lowest = float(_bone_points(rest, posed_world)[:, 2].min())
             grounded_by = "bones"
         if math.isfinite(lowest):
             shift = reference - lowest

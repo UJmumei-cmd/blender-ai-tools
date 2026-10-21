@@ -24,6 +24,7 @@ from blender_ai_tools.measure import (deformation, geometry, kinematics, mesh_ch
                                       weights)
 from blender_ai_tools.measure.results import Measurement, Signal
 from blender_ai_tools.model import card
+from blender_ai_tools.motion import course
 from tests import shapes
 
 PACKAGE_DIR = Path(__file__).resolve().parents[2] / "blender_ai_tools"
@@ -45,6 +46,7 @@ MOVED_THRESHOLDS = [
     (roundtrip, "ORDER_MATCH_MIN_FRACTION"),
     (roundtrip, "SKELETON_MATRIX_TOLERANCE"),
     (roundtrip, "POSE_MOVED_TOLERANCE"),
+    (course, "APP_ORBIT_DISTANCE_MARGIN"),
 ]
 
 

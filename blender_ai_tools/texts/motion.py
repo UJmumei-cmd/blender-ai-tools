@@ -124,6 +124,8 @@ TEXTS: dict[str, dict[str, str]] = {
         "ja": "ポーズ {poses} 個：どの出来事も緑です",
         "en": "{poses} pose(s): every event is green",
     },
+    # MARK: - 進み具合（A10 の裏の係が書く）
+    "motion.progress_pose": {"ja": "ポーズ「{pose}」を確かめています", "en": "Checking the pose \"{pose}\""},
     # MARK: - 報告の文
     "motion.report_header": {
         "ja": "確かめの動き：ポーズ {poses} 個、出来事 {events} 件（赤 {red}・灰 {gray}・黄 {yellow}・緑 {green}）",

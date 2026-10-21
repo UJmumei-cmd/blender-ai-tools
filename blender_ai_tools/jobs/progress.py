@@ -10,9 +10,10 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import math
+import operator
 import os
 from collections.abc import Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,8 +30,11 @@ STATUSES = ("queued", "running", "done", "failed", "cancelled")
 FINISHED_STATUSES = ("done", "failed", "cancelled")
 
 
-class JobCancelled(Exception):
-    """中止の頼みを受けた（道具の中から上がる。裏の係が受け止めて「中止」と書く）"""
+class JobCancelled(BaseException):
+    """中止の頼みを受けた（道具の中から上がる。裏の係が受け止めて「中止」と書く）。
+
+    Exception ではなく BaseException の子にする（KeyboardInterrupt と同じ）。道具の中の `except Exception:` で
+    握りつぶされず、裏の係まで届くようにするため"""
 
 
 # MARK: - 進み具合の形
@@ -192,14 +196,16 @@ class Reporter:
 
     def report(self, step: int, total: int, message_key: str = "", values: dict[str, Any] | None = None) -> Progress:
         """いまの段を書く（step は 0 から total まで。total が 0 なら割合は分からない）。先に中止の頼みを見る。
-        values は message_key の文に入れる値（辞書）"""
+        values は message_key の文に入れる値（辞書）。step・total と values には numpy の数を渡してもよい
+        （Python の数にして書く。bool と小数は ValueError）"""
         self.check_cancel()
-        if type(step) is not int or type(total) is not int or step < 0 or total < 0:
-            raise ValueError(f"step と total は 0 以上の整数にしてください（いまは {step!r}, {total!r}）")
+        step, total = _as_count("step", step), _as_count("total", total)
+        if not isinstance(values, dict) and values is not None:
+            raise ValueError(f"values は辞書か None にしてください（いまは {type(values).__name__}）")
         fraction = None if total == 0 else min(1.0, step / total)
         now = provenance.now_iso()
         return self._write(Progress(status="running", updated_at=now, step=step, total=total, message_key=message_key,
-                                    message_values=dict(values or {}), fraction=fraction,
+                                    message_values=provenance.to_plain(dict(values or {}), "values"), fraction=fraction,
                                     started_at=self.started_at or now, pid=self.pid))
 
     def finish(self, status: str, *, error: str | None = None, error_key: str | None = None,
@@ -220,6 +226,19 @@ class Reporter:
         write_progress(self.job_dir, progress)
         self.last = progress
         return progress
+
+
+def _as_count(name: str, value: Any) -> int:
+    """0 以上の整数にする（numpy の整数も受け取る。bool・小数・文字は ValueError）"""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} は 0 以上の整数にしてください（いまは {value!r}）")
+    try:
+        count = operator.index(value)
+    except TypeError as error:
+        raise ValueError(f"{name} は 0 以上の整数にしてください（いまは {value!r}）") from error
+    if count < 0:
+        raise ValueError(f"{name} は 0 以上の整数にしてください（いまは {value!r}）")
+    return count
 
 
 _current: contextvars.ContextVar[Reporter | None] = contextvars.ContextVar("blender_ai_tools_job_reporter", default=None)
@@ -251,3 +270,9 @@ def check_cancel() -> None:
 
 def is_running_in_worker() -> bool:
     return _current.get() is not None
+
+
+def current_job_dir() -> Path | None:
+    """道具の中から呼ぶ。裏の係の中なら、いまの仕事のフォルダ（道具が報告の HTML などを置いてよい所）。画面の中なら None"""
+    reporter = _current.get()
+    return None if reporter is None else reporter.job_dir

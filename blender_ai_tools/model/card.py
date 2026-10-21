@@ -48,7 +48,9 @@ from typing import Any
 import numpy as np
 
 from .. import texts, thresholds
-from ..bones import BoneMapping, canonical_bone, canonical_bones, canonical_names, map_bones, mirror_name, normalize
+from ..texts import card as _card_texts
+from ..bones import (BoneMapping, canonical_bone, canonical_bones, canonical_names, is_sway_name, map_bones, mirror_name,
+                     normalize)
 from ..measure.geometry import as_array, as_points, as_triangles
 from ..measure.results import Measurement, Signal
 
@@ -161,8 +163,10 @@ BODY_SOURCE_KIND = "kind"  # 種類が体の部品
 BODY_SOURCE_ALL = "all_meshes"  # 体の部品が無いので、全部のメッシュ
 
 # bone_mapping（JSON の形）のキー
-BONE_MAPPING_KEYS = ("mapping", "unknown", "known_extras", "conflicts", "ambiguous", "shadowed",
+BONE_MAPPING_KEYS = ("mapping", "unknown", "known_extras", "sway_extras", "conflicts", "ambiguous", "shadowed",
                      "missing_standard", "missing_semi_standard", "semi_standard_compliant")
+# 古い版 2 のカード（sway_extras を書く前の物）を読めるように、無いときは known_extras から決める
+_OPTIONAL_BONE_MAPPING_KEYS = ("sway_extras",)
 _MEASUREMENT_KEYS = {
     1: ("space", "joints", "missing_joints", "mesh_z_range", "body_meshes", "body_meshes_source", "values"),
     2: ("space", "joints", "missing_joints", "mesh_up_range", "material_up_range", "excluded_materials",
@@ -201,99 +205,14 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 # 画面と報告に出す文（日本語が元。英語にも切り替える）。texts パッケージの分野のファイルと同じ形
 # （キー "card.名前" → {"ja": 日本語, "en": 英語}。数字などは {name} の形で入れる）。
 # texts/card.py に移して texts の _MODULES に足せば、card_text() はそちらを使う（中身はそのまま移せる）
-TEXTS: dict[str, dict[str, str]] = {
-    "card.bones_changed": {
-        "ja": "骨（名前・並び・親子・位置・ねじれ・形を動かすかどうか）が変わりました",
-        "en": "The bones changed (names, order, parents, positions, roll or deform flags)",
-    },
-    "card.shape_changed": {"ja": "{name} の形が変わりました", "en": "The shape of {name} changed"},
-    "card.mesh_removed": {"ja": "{name} がなくなりました", "en": "{name} is gone"},
-    "card.mesh_added": {"ja": "{name} が増えました", "en": "{name} was added"},
-    "card.armature_changed": {
-        "ja": "アーマチュアが変わりました（{before} → {after}）",
-        "en": "The armature changed ({before} → {after})",
-    },
-    "card.no_card": {
-        "ja": "登録カードがありません。先にモデルを登録してください",
-        "en": "There is no registration card. Please register the model first",
-    },
-    "card.unreadable_card": {"ja": "登録カードが読めません：{error}", "en": "The registration card cannot be read: {error}"},
-    "card.unreadable_model": {"ja": "いまのモデルを読めません：{error}", "en": "The current model cannot be read: {error}"},
-    "card.legacy_card": {
-        "ja": "古い形（版 {version}）の登録カードです。位置が世界の座標で入っているので、一度測り直してください",
-        "en": "This registration card has an old format (version {version}) with world positions. "
-              "Please measure the model once more",
-    },
-    "card.placement_moved": {
-        "ja": "置き場所が変わりました（形はそのまま）",
-        "en": "The model was moved (its shape is unchanged)",
-    },
-    "card.placement_resized": {
-        "ja": "モデルの大きさか傾き（アーマチュアの置き方）が変わりました。背の高さと長さを測り直してください",
-        "en": "The size or tilt of the model (the armature placement) changed. Please measure the height and "
-              "lengths again",
-    },
-    "card.choices_not_carried": {
-        "ja": "前のカード（アーマチュア {armature}）が、いまのモデルと同じモデルの物か確かめられない"
-              "（アーマチュアの名前か骨が違う）ので、部品の種類・骨の答え・素材の出所と利用条件を写しませんでした",
-        "en": "The previous card (armature {armature}) may belong to a different model (the armature name or the "
-              "bones differ), so part kinds, bone answers and the source and terms of use were not copied",
-    },
-    "card.part_choice_dropped": {
-        "ja": "部品 {name} がなくなったので、選んだ種類を写しませんでした",
-        "en": "The part {name} is gone, so its chosen kind was not copied",
-    },
-    "card.material_choice_dropped": {
-        "ja": "部品 {name} の材質 {material} がなくなったので、選んだ種類を写しませんでした",
-        "en": "The material {material} of the part {name} is gone, so its chosen kind was not copied",
-    },
-    "card.answer_dropped": {
-        "ja": "骨 {bone} の答え（{answer}）は、いまの辞書では使えないので外しました",
-        "en": "The answer for the bone {bone} ({answer}) cannot be used with the current dictionary, so it was removed",
-    },
-    "card.semi_standard_missing": {
-        "ja": "MMD 準標準の骨が足りないか、決まらない骨があります（その骨が要る確かめは灰になります）",
-        "en": "Some MMD semi-standard bones are missing or undecided (checks that need them become gray)",
-    },
-    "card.unknown_bones": {
-        "ja": "辞書に無い骨・1つに決まらない骨があります（ユーザーに聞きます）",
-        "en": "Some bones are not in the dictionary or are undecided (the user is asked)",
-    },
-    "card.no_parts": {"ja": "部品（メッシュ）が1つもありません", "en": "There are no parts (meshes)"},
-    "card.unconfirmed_parts": {
-        "ja": "種類（服なら服の種類も）をまだ決めていない部品か材質があります",
-        "en": "Some parts or materials have no confirmed kind yet (or no clothing type for clothes)",
-    },
-    "card.unmeasured_values": {"ja": "測れなかった値があります：{names}", "en": "Some values could not be measured: {names}"},
-    "card.all_meshes_height": {
-        "ja": "体の部品が決まっていないので、背の高さを全部のメッシュで測りました",
-        "en": "No part is marked as body, so the height was measured with all meshes",
-    },
-    "card.source_missing": {
-        "ja": "素材の出所と利用条件が書かれていません：{fields}",
-        "en": "The source and terms of use are not written: {fields}",
-    },
-    "card.stale": {"ja": "測り直しが必要です：{reasons}", "en": "The card needs to be measured again: {reasons}"},
-    "card.source_origin": {"ja": "素材の出所", "en": "Source"},
-    "card.source_author": {"ja": "作者", "en": "Author"},
-    "card.source_url": {"ja": "URL", "en": "URL"},
-    "card.source_terms": {"ja": "利用条件", "en": "Terms of use"},
-    "card.list_separator": {"ja": "、", "en": ", "},
-    "card.sentence_separator": {"ja": "。", "en": ". "},
-}
+# 文の形は texts/card.py に置く（card_text から使う。テストは texts の決まりで確かめる）
+TEXTS = _card_texts.TEXTS
 
 
 def card_text(key: str, **values: Any) -> str:
-    """文を、いまの言語（texts.current_language）で作る。texts に同じキーがあれば、そちらを使う。
-    文が無い言語のときは日本語。キーが無い・入れる値が合わないときは KeyError・ValueError（texts.text と同じ）"""
-    if key in texts.TEXTS:
-        return texts.text(key, **values)
-    entry = TEXTS[key]
-    template = entry.get(texts.current_language()) or entry[texts.FALLBACK_LANGUAGE]
-    needed = texts.placeholders(template)
-    if needed != set(values):
-        raise ValueError(f"{key}: 入れる値が合いません（いる：{sorted(needed)}、渡した：{sorted(values)}）")
-    return template.format(**values)
+    """文を、いまの言語（texts.current_language）で作る（texts.text と同じ。文は texts/card.py）。
+    キーが無い・入れる値が合わないときは KeyError・ValueError"""
+    return texts.text(key, **values)
 
 
 # MARK: - 入力の確かめ
@@ -996,6 +915,7 @@ def bone_mapping_to_json(mapping: BoneMapping) -> dict[str, Any]:
         "mapping": dict(mapping.mapping),
         "unknown": list(mapping.unknown),
         "known_extras": list(mapping.known_extras),
+        "sway_extras": list(mapping.sway_extras),
         "conflicts": {canonical: list(names) for canonical, names in mapping.conflicts.items()},
         "ambiguous": {name: list(candidates) for name, candidates in mapping.ambiguous.items()},
         "shadowed": dict(mapping.shadowed),
@@ -1152,7 +1072,13 @@ def _measure(joints: Mapping[str, np.ndarray], mesh_ranges: Mapping[str, Sequenc
                 if source == BODY_SOURCE_ALL else "")
     values: dict[str, dict[str, Any]] = {}
     if extent is None:
-        values[HEIGHT] = _entry(None, "m", HEIGHT_METHOD, "高さを測るメッシュ（体の材質）に、頂点がありません", ())
+        if excluded:
+            # 体ではない種類の材質を外したら、測る頂点が残らなかった（材質の種類がまちがっているかもしれない）
+            dropped = "、".join(f"{name} の {_missing_text(materials)}" for name, materials in excluded.items())
+            reason = f"体ではない種類の材質（{dropped}）を外すと、高さを測る頂点がありません。材質の種類を確かめてください"
+        else:
+            reason = "高さを測るメッシュ（体の材質）に、頂点がありません"
+        values[HEIGHT] = _entry(None, "m", HEIGHT_METHOD, reason, ())
     else:
         values[HEIGHT] = _entry(extent[1] - extent[0], "m", HEIGHT_METHOD, all_note, ())
     for side in ("L", "R"):
@@ -1350,8 +1276,15 @@ def _check_string_dict(value: Any, what: str, *, list_values: bool = False) -> N
 
 
 def _check_bone_mapping(data: dict[str, Any]) -> None:
-    if set(data) != set(BONE_MAPPING_KEYS):
+    required = set(BONE_MAPPING_KEYS) - set(_OPTIONAL_BONE_MAPPING_KEYS)
+    if not required <= set(data) <= set(BONE_MAPPING_KEYS):
         raise ValueError(f"bone_mapping の項目は {'・'.join(BONE_MAPPING_KEYS)} にしてください")
+    _check_string_list(data["known_extras"], "bone_mapping.known_extras")
+    if "sway_extras" not in data:
+        data["sway_extras"] = [name for name in data["known_extras"] if is_sway_name(name)]
+    _check_string_list(data["sway_extras"], "bone_mapping.sway_extras")
+    if not set(data["sway_extras"]) <= set(data["known_extras"]):
+        raise ValueError("bone_mapping.sway_extras は known_extras の中の名前だけにしてください")
     _check_string_dict(data["mapping"], "bone_mapping.mapping")
     _check_string_dict(data["shadowed"], "bone_mapping.shadowed")
     _check_string_dict(data["conflicts"], "bone_mapping.conflicts", list_values=True)
@@ -1506,7 +1439,8 @@ class ModelCard:
     blend_name: 測った .blend の名前（保存していないファイルは ""）
     armature_name: アーマチュアのオブジェクトの名前
     parts: 部品（メッシュのオブジェクト）の並び。名前は重ならない
-    bone_mapping: 骨の名前の対応（bone_mapping_to_json の形。辞書と bone_answers から作った物）
+    bone_mapping: 骨の名前の対応（bone_mapping_to_json の形。辞書と、bone_answers のうち いまの辞書で使える答えから
+        作った物）
     measurements: 測った値（measure_body の形）
     fingerprints: {"shapes": {メッシュの名前: 指紋}, "bones": 指紋}（版 2 はアーマチュアの中の座標で作った物）
     source: 素材の出所と利用条件 {"origin", "author", "url", "terms"}（ユーザーが書いた文字のまま）
@@ -1776,24 +1710,30 @@ def set_bone_answer(card: ModelCard, original_name: str, answer: str | None) -> 
     （人型の骨ではない）。None は答えを消す。
     答えを入れると bone_mapping を作り直し（map_with_answers）、関節の位置と測った値も測り直す。
     辞書で決まる骨・共通の名前でない答え・ほかの骨が使っている共通の名前は ValueError。
+    カードに残っている、いまの辞書では使えない答え（辞書が新しくなって、その骨が辞書で決まるようになった など。
+    登録し直す前のカード）は、対応には使わないが消さない（登録のやり直し carry_user_choices が外して知らせる）。
+    そのため、使えない答えが残っていても、ほかの骨には答えられる。
     """
     _editable(card)
     if not isinstance(original_name, str):
         raise ValueError(f"original_name は文字にしてください（いまは {_describe(original_name)}）")
     names = card.skeleton["names"]
     answers = {name: value for name, value in card.bone_answers.items() if name != original_name}
+    # いまの辞書で使える答えだけで対応を作る（使えない答えは answers に残すが、usable には入れない）
+    usable, _ = _split_answers(names, answers)
     if answer is not None:
         if not isinstance(answer, str):
             raise ValueError(f"answer は共通の名前か {EXTRA_ANSWER!r} か None にしてください（いまは {_describe(answer)}）")
         bone = canonical_bone(answer) if answer != EXTRA_ANSWER else None
         value = EXTRA_ANSWER if answer == EXTRA_ANSWER else (bone.name if bone is not None else answer)
-        problem = _answer_problem(map_bones(names), frozenset(names), original_name, value, answers)
+        problem = _answer_problem(map_bones(names), frozenset(names), original_name, value, usable)
         if problem is not None:
             raise ValueError(problem)
         answers[original_name] = value
+        usable[original_name] = value
     elif original_name not in names:
         raise ValueError(f"骨 {original_name!r} は、このモデルにありません")
-    mapping = bone_mapping_to_json(map_with_answers(names, answers))
+    mapping = bone_mapping_to_json(map_with_answers(names, usable))
     return replace(card, bone_answers=answers, bone_mapping=mapping,
                    measurements=_remeasure_card(card, card.parts, mapping))
 

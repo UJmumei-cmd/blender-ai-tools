@@ -33,6 +33,7 @@ from ..measure.geometry import (DEFAULT_CHUNK_PAIRS, PENETRATION_NAME, as_array,
                                 closest_points, penetration_depths, summarize_penetration, weld_exact)
 from ..measure.results import Measurement, Signal, worst
 from ..measure.visibility import Camera, DepthBuffer, orbit_views, summarize_visible_points
+from ..thresholds import APP_ORBIT_DISTANCE_MARGIN
 from .poses import POSES, AppliedPose, PoseSpec
 
 __all__ = [
@@ -78,11 +79,6 @@ APP_MOTION_NAME = "app_motion"
 VISIBLE_PENETRATION_NAME = "visible_penetration"
 # 左右の並び（キャラから見た左、右）
 SIDES = ("L", "R")
-
-# MARK: - 計算のための数字（判定の基準ではない）
-
-# まわりのカメラを置く距離の余裕（モデル全体を包む球が、画像の短い辺にちょうど入る距離の何倍か）
-ORBIT_DISTANCE_MARGIN = 1.1
 
 _SIGNAL_KEYS = {Signal.GREEN: "motion.signal_green", Signal.YELLOW: "motion.signal_yellow",
                 Signal.GRAY: "motion.signal_gray", Signal.RED: "motion.signal_red"}
@@ -430,7 +426,7 @@ def check_cloth_penetration(cloth_points: Any, body_vertices: Any, parts: BodyPa
 def orbit_cameras(vertices: Any, **options: Any) -> dict[str, Camera]:
     """モデル全体が写る、まわり全体から見るカメラ（measure.visibility.orbit_views。アプリのカメラの画角・縦長の画面）。
 
-    中心は頂点の囲みの箱の真ん中。距離は、囲みの箱を包む球が画像の短い辺に入る距離 × ORBIT_DISTANCE_MARGIN。
+    中心は頂点の囲みの箱の真ん中。距離は、囲みの箱を包む球が画像の短い辺に入る距離 × thresholds.APP_ORBIT_DISTANCE_MARGIN。
     options は orbit_views にそのまま渡す（azimuth_step_deg・elevations_deg・include_poles・height など）。
     """
     points = as_points(vertices, "vertices")
@@ -444,7 +440,7 @@ def orbit_cameras(vertices: Any, **options: Any) -> dict[str, Camera]:
         raise ValueError(f"aspect と fov_deg を確かめてください（いまは {aspect}・{fov}）")
     # 画角は長い辺に合わせる（fov_axis "auto"）。短い辺の半分の角度で、球が入る距離を決める
     short_half = math.atan(math.tan(math.radians(fov) / 2.0) * min(aspect, 1.0 / aspect))
-    distance = radius / math.sin(short_half) * ORBIT_DISTANCE_MARGIN
+    distance = radius / math.sin(short_half) * APP_ORBIT_DISTANCE_MARGIN
     return orbit_views((low + high) / 2.0, distance, **options)
 
 

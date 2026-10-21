@@ -525,6 +525,29 @@ class PlacementChangeTest(unittest.TestCase):
         nudged[0, 3] += thresholds.REPRO_TOLERANCE_LENGTH
         self.assertEqual(placement_change(base, nudged), PLACEMENT_MOVED)
 
+    def test_length_change_with_the_same_up_row_is_a_change(self):
+        """上向きの行（3行目）と裏返しが同じでも、世界の長さが変わる置き方（縦横だけの大きさ・ゆがみ）は changed。
+        上向きの行だけを見る作りだと moved にしてしまう（長さの決まり L^T L も見ること）"""
+        base = placement(yaw(20.0), (0.3, -0.2, 0.1))
+        shear = np.eye(3)
+        shear[0, 1] = 0.2
+        cases = {
+            "x scale": placement(yaw(20.0) @ np.diag([1.5, 1.0, 1.0]), (0.3, -0.2, 0.1)),
+            "xy scale": placement(yaw(20.0) @ np.diag([2.0, 2.0, 1.0]), (0.3, -0.2, 0.1)),
+            "shear": placement(yaw(20.0) @ shear, (0.3, -0.2, 0.1)),
+        }
+        for label, current in cases.items():
+            with self.subTest(case=label):
+                self.assertTrue(np.allclose(current[2, :3], base[2, :3]))  # 上向きの行は同じ
+                self.assertGreater(np.linalg.det(current[:3, :3]), 0.0)  # 裏返しでもない
+                self.assertEqual(placement_change(base, current), PLACEMENT_CHANGED)
+        # 縦横の大きさが違うアーマチュアでも、平行移動と Z まわりの回転だけなら moved
+        stretched = placement(np.diag([1.0, 2.0, 1.0]))
+        self.assertEqual(placement_change(stretched, placement(yaw(90.0) @ np.diag([1.0, 2.0, 1.0]), (1.0, 2.0, 3.0))),
+                         PLACEMENT_MOVED)
+        # 同じ大きさでも、アーマチュアの中の軸のまわりに回す（右から掛ける）と世界の長さが変わる
+        self.assertEqual(placement_change(stretched, placement(np.diag([1.0, 2.0, 1.0]) @ yaw(90.0))), PLACEMENT_CHANGED)
+
     def test_check_against(self):
         card = stick_card(where=placement(yaw(10.0), (1.0, 0.0, 0.0)))
         prints = card.fingerprints
@@ -1043,6 +1066,26 @@ class MaterialPartsTest(unittest.TestCase):
         self.assertAlmostEqual(card.value(HEIGHT), TOP_Z - 0.0, places=12)  # 材質の無い箱（下 0.0）も体の側
         self.assertEqual(ModelCard.from_json(card.to_json()), card)
 
+    def test_body_part_whose_materials_are_all_non_body_is_not_measured(self):
+        """体の部品の材質が、どれも体ではない種類（服・髪）：高さを測る頂点が無い。部品の全部の頂点で測り直したりせず、
+        理由を付けて None（灰）にする。1つを体にすると測れる"""
+        card = set_part_kind(one_mesh_card(("服", "髪", "帽子")), "Model", "body")
+        self.assertEqual(card.measurements["excluded_materials"], {"Model": ["服", "髪", "帽子"]})
+        self.assertEqual(card.measurements["body_meshes_source"], "kind")
+        for name in (HEIGHT, HEAD_RATIO):
+            with self.subTest(name=name):
+                self.assertIsNone(card.value(name))
+                self.assertTrue(card.measurements["values"][name]["reason"])
+        for material in ("服", "髪", "帽子"):
+            self.assertIn(material, card.measurements["values"][HEIGHT]["reason"])
+        body = {m.name: m for m in summarize_card(card)}["body_measurements"]
+        self.assertEqual(body.signal, Signal.GRAY)
+        self.assertEqual(set(body.details["unmeasured"]), {HEIGHT, HEAD_RATIO})
+        measured = set_material_kind(card, "Model", "服", "body")
+        self.assertEqual(measured.value(HEIGHT), 1.5)
+        self.assertEqual(measured.value(HEAD_RATIO), 6.0)
+        self.assertEqual(measured.measurements["excluded_materials"], {"Model": ["髪", "帽子"]})
+
     def test_unconfirmed_count_includes_materials(self):
         card = one_mesh_card()
         unconfirmed = {m.name: m for m in summarize_card(card)}["unconfirmed_parts"]
@@ -1212,6 +1255,35 @@ class BoneAnswersTest(unittest.TestCase):
         self.assertEqual(kept.bone_mapping["mapping"]["腕.L"], "左腕")
         self.assertEqual(notes, [card_text("card.answer_dropped", bone="腕.L", answer=EXTRA_ANSWER)])
         self.assertEqual(notes, ["骨 腕.L の答え（extra）は、いまの辞書では使えないので外しました"])
+
+    def test_answer_that_no_longer_applies_does_not_block_other_answers(self):
+        """辞書が新しくなって使えなくなった答えがカードに残っていても（拡張機能を新しくした後の、登録し直す前のカード）、
+        ほかの骨には答えられる。使えない答えは対応に使わず、消さずに残す（登録のやり直しで外して知らせる）"""
+        data = json.loads(stick_card(extra=((EXTRA_BONE, EXTRA_HEAD), ("Bone.001", (0.1, 0.1, 0.1)))).to_json())
+        data["bone_answers"] = {"腕.L": EXTRA_ANSWER}
+        stale = ModelCard.from_json(json.dumps(data))  # 形は正しいので読める
+        self.assertEqual(stale.bone_mapping["mapping"]["腕.L"], "左腕")
+        answered = set_bone_answer(stale, EXTRA_BONE, EXTRA_ANSWER)
+        self.assertEqual(answered.bone_answers, {"腕.L": EXTRA_ANSWER, EXTRA_BONE: EXTRA_ANSWER})
+        mapping = answered.bone_mapping
+        self.assertEqual(mapping["mapping"]["腕.L"], "左腕")  # 辞書で決まる骨は辞書のまま（使えない答えは使わない）
+        self.assertEqual(mapping["unknown"], ["Bone.001"])
+        self.assertEqual(mapping["known_extras"][-1], EXTRA_BONE)
+        self.assertEqual(answered.value(ARM_REST_DOWN["L"]), 38.7)
+        self.assertEqual(ModelCard.from_json(answered.to_json()), answered)
+        # 使えない答えの骨そのものには答えられない（辞書で決まる骨）。消すことはできる
+        with self.assertRaises(ValueError):
+            set_bone_answer(stale, "腕.L", EXTRA_ANSWER)
+        self.assertEqual(set_bone_answer(answered, "腕.L", None).bone_answers, {EXTRA_BONE: EXTRA_ANSWER})
+        # 使えない答えが使っていた共通の名前（左ひじ）は、ほかの骨の答えに使える（使えない答えは取り合いに入らない）
+        data = json.loads(elbow_card().to_json())
+        data["bone_answers"] = {"腕.L": "左ひじ"}
+        stale = ModelCard.from_json(json.dumps(data))
+        self.assertIsNone(stale.value(ARM_REST_DOWN["L"]))
+        answered = set_bone_answer(stale, EXTRA_BONE, "左ひじ")
+        self.assertEqual(answered.bone_mapping["mapping"][EXTRA_BONE], "左ひじ")
+        self.assertEqual(answered.value(ARM_REST_DOWN["L"]), 38.7)
+        self.assertEqual(answered.bone_answers, {"腕.L": "左ひじ", EXTRA_BONE: "左ひじ"})
 
 
 # MARK: - 版 1 の古いカード
@@ -1430,6 +1502,36 @@ class SummarizeCardTest(unittest.TestCase):
         card = stick_card()
         self.assertEqual(remeasure_reasons(card, {}, card.fingerprints["bones"]),
                          ["Body is gone", "Hat is gone", "Mesh.001 is gone"])
+
+
+class SwayExtrasTest(unittest.TestCase):
+    """骨の対応に、揺れ物の骨（sway_extras）が入る。古い版 2 のカード（無い物）も読める"""
+
+    def test_json_shape_matches_registry_tool(self):
+        from blender_ai_tools.registry import build_catalog
+
+        names = ["左腕", "髪1", "操作中心", "謎の骨"]
+        via_card = bone_mapping_to_json(map_bones(names))
+        via_tool = build_catalog().call("bones.map_names", {"names": names})
+        self.assertEqual(via_card, via_tool)
+        self.assertEqual(via_card["sway_extras"], ["髪1"])
+        self.assertEqual(set(via_card), set(card_module.BONE_MAPPING_KEYS))
+
+    def test_missing_sway_extras_is_filled_from_known_extras(self):
+        # 揺れ物の骨（髪1）と、揺れ物でない知っている骨（操作中心）を持つモデルのカード
+        card = stick_card(extra=((EXTRA_BONE, EXTRA_HEAD), ("髪1", (0.0, 0.0, 1.7)), ("操作中心", (0.0, 0.0, 0.0))))
+        data = json.loads(card.to_json())
+        self.assertEqual(data["bone_mapping"]["known_extras"], ["髪1", "操作中心"])
+        self.assertEqual(data["bone_mapping"]["sway_extras"], ["髪1"])
+        del data["bone_mapping"]["sway_extras"]  # 版 2 のカード（sway_extras を書く前の物）
+        loaded = ModelCard.from_json(json.dumps(data, ensure_ascii=False))
+        self.assertEqual(loaded.bone_mapping["sway_extras"], ["髪1"])
+
+    def test_sway_extras_must_be_known_extras(self):
+        data = json.loads(stick_card().to_json())
+        data["bone_mapping"]["sway_extras"] = ["左腕"]  # カードの骨にはあるが、known_extras ではない
+        with self.assertRaisesRegex(ValueError, "sway_extras"):
+            ModelCard.from_json(json.dumps(data, ensure_ascii=False))
 
 
 class CardTextsTest(unittest.TestCase):

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -24,9 +25,12 @@ def worker_script() -> Path:
 
 
 def blender_binary(preferred: str | os.PathLike[str] | None = None) -> str:
-    """裏の Blender の場所。設定に書いてあればそれ、無ければいま動いている Blender と同じ物"""
+    """裏の Blender の場所。設定に書いてあればそれ、無ければいま動いている Blender と同じ物。
+    Mac の Blender.app（フォルダ）を渡されたら、その中の Contents/MacOS/Blender を使う"""
     text = "" if preferred is None else os.fspath(preferred).strip()
     path = os.path.abspath(bpy.path.abspath(text)) if text else bpy.app.binary_path
+    if os.path.isdir(path) and path.lower().endswith(".app"):
+        path = os.path.join(path, "Contents", "MacOS", "Blender")
     if not os.path.isfile(path) or not os.access(path, os.X_OK):
         raise ValueError(f"Blender が見つからないか、動かせるファイルではありません：{path}")
     return path
@@ -54,26 +58,46 @@ def make_queue(root: str | os.PathLike[str], *, blender: str | os.PathLike[str] 
 
 def make_job(tool_id: str, params: dict[str, Any], *, input_blend: str | os.PathLike[str] | None,
              confirmed: bool = False, plan_approved: bool = False, job_id: str | None = None) -> JobSpec:
-    """仕事を作る。autoexec は画面の Blender の設定に合わせる（結果が変わりうるので、仕事の形に残る）"""
-    return JobSpec(job_id=job_id or new_job_id(), tool_id=tool_id, params=params,
-                   input_blend=None if input_blend is None else os.fspath(input_blend),
+    """仕事を作る。autoexec は画面の Blender の設定に合わせる（結果が変わりうるので、仕事の形に残る）。
+    input_blend は絶対の場所にする（Blender の「//」から始まる相対の場所も、いまの .blend から絶対にする）"""
+    if input_blend is not None:
+        input_blend = os.path.abspath(bpy.path.abspath(os.fspath(input_blend)))
+    return JobSpec(job_id=job_id or new_job_id(), tool_id=tool_id, params=params, input_blend=input_blend,
                    created_at=provenance.now_iso(), confirmed=confirmed, plan_approved=plan_approved,
                    autoexec=autoexec_allowed())
+
+
+def make_tick(queue: JobQueue, *, interval: float = thresholds.JOB_POLL_INTERVAL_SECONDS,
+              on_update: Callable[[], None] | None = None) -> Callable[[], float]:
+    """タイマーの1回分：進み具合を読み、次の仕事を始め、画面を描き直す。いつも次の間隔を返す。
+
+    中で例外が起きても止めない（Blender は、タイマーの関数が例外を上げるとそのタイマーを外してしまい、
+    順番待ちが黙って止まったままになる）。例外は出力に残して、次の回に続ける。
+    """
+
+    def tick() -> float:
+        try:
+            queue.poll()
+            queue.start_next()
+            if on_update is not None:
+                on_update()
+        except Exception:  # noqa: BLE001  タイマーを止めないために、どんな例外でも受け止める
+            traceback.print_exc()
+        return interval
+
+    return tick
 
 
 def start_polling(queue: JobQueue, *, interval: float = thresholds.JOB_POLL_INTERVAL_SECONDS,
                   on_update: Callable[[], None] | None = None) -> Callable[[], None]:
     """タイマーで、進み具合を読み、次の仕事を始める。止める関数を返す（register の解除のときに呼ぶ）。
     画面を描き直すのは on_update（パネルの側が渡す）"""
+    inner = make_tick(queue, interval=interval, on_update=on_update)
 
     def tick() -> float | None:
         if stopped[0]:
             return None
-        queue.poll()
-        queue.start_next()
-        if on_update is not None:
-            on_update()
-        return interval
+        return inner()
 
     stopped = [False]
     bpy.app.timers.register(tick, first_interval=interval, persistent=True)

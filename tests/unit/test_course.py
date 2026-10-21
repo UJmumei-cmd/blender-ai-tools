@@ -288,7 +288,7 @@ class ClothPenetrationTest(unittest.TestCase):
         radius = np.linalg.norm([0.5, 0.4, 1.6]) / 2.0
         short_half = math.atan(math.tan(math.radians(thresholds.APP_CAMERA_FOV_DEG) / 2.0)
                                * thresholds.APP_SCREEN_ASPECT)
-        expected = radius / math.sin(short_half) * course.ORBIT_DISTANCE_MARGIN
+        expected = radius / math.sin(short_half) * thresholds.APP_ORBIT_DISTANCE_MARGIN
         for name, camera in cameras.items():
             with self.subTest(camera=name):
                 self.assertAlmostEqual(float(np.linalg.norm(camera.position - [0.0, 0.0, 0.8])), expected, places=9)
