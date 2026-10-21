@@ -919,6 +919,59 @@ class SummarizeSinkTest(unittest.TestCase):
             km.summarize_sink(np.zeros((2, 2, 2)))
 
 
+class FloorGlideTest(unittest.TestCase):
+    """床の上のすべり：床の高さのまま、上下に動かずに、横へ速く動いた距離"""
+
+    FPS = 30.0
+
+    def track(self, xs, zs=None):
+        xs = np.asarray(xs, dtype=np.float64)
+        zs = np.zeros_like(xs) if zs is None else np.asarray(zs, dtype=np.float64)
+        return np.stack([xs, np.zeros_like(xs), zs], axis=1)
+
+    def test_fast_glide_on_the_floor_is_counted(self):
+        step = thresholds.FOOT_CONTACT_SPEED * 4.0 / self.FPS  # 速さの基準の4倍
+        xs = np.concatenate([np.zeros(5), step * np.arange(1, 11), np.full(5, step * 10)])
+        glides = km.floor_glides(self.track(xs), fps=self.FPS)
+        self.assertEqual(len(glides), 1)
+        start, end, distance = glides[0]
+        self.assertEqual((start, end), (0, len(xs) - 1))
+        self.assertAlmostEqual(distance, step * 10)
+        self.assertEqual(km.summarize_glide(glides).signal, Signal.RED)
+
+    def test_slow_slide_is_left_to_foot_slide(self):
+        """ゆっくりのすべりは foot_slide が数えるので、ここでは 0（同じすべりを2回数えない）"""
+        step = thresholds.FOOT_CONTACT_SPEED * 0.5 / self.FPS
+        glides = km.floor_glides(self.track(step * np.arange(60)), fps=self.FPS)
+        self.assertEqual([round(d, 12) for _, _, d in glides], [0.0])
+        self.assertEqual(km.summarize_glide(glides).signal, Signal.GREEN)
+
+    def test_lifting_the_foot_is_not_a_glide(self):
+        """足を上げ下ろしするフレームは上下に動くので区間に入らない。空中の速い動きも数えない"""
+        frames = 40
+        xs = np.linspace(0.0, 0.5, frames)
+        zs = np.concatenate([np.zeros(10), np.linspace(0.0, 0.1, 10), np.linspace(0.1, 0.0, 10), np.zeros(10)])
+        xs[:10] = 0.0
+        xs[30:] = xs[29]
+        glides = km.floor_glides(self.track(xs, zs), fps=self.FPS)
+        self.assertTrue(glides)
+        self.assertLessEqual(max(d for _, _, d in glides), thresholds.FOOT_SLIDE_TOLERANCE)
+
+    def test_short_runs_and_no_floor(self):
+        self.assertEqual(km.floor_glides(self.track([0.0, 1.0], [0.5, 0.5]), fps=self.FPS), [])
+        self.assertEqual(km.summarize_glide([]).signal, Signal.GRAY)
+        self.assertEqual(km.floor_glides(self.track([0.0]), fps=self.FPS), [])
+        two = km.floor_glides(self.track([0.0, 0.0]), fps=self.FPS, min_frames=3)
+        self.assertEqual(two, [])
+
+    def test_bad_input(self):
+        for bad in (0, True, 1.5, -1):
+            with self.subTest(min_frames=bad), self.assertRaises(ValueError):
+                km.floor_glides(self.track([0.0, 0.0, 0.0]), fps=self.FPS, min_frames=bad)
+        with self.assertRaises(ValueError):
+            km.floor_glides(self.track([0.0, 0.0]), fps=0.0)
+
+
 class SummarizeSlideTest(unittest.TestCase):
     def test_red_and_green(self):
         m = km.summarize_slide([(0, 9, 0.001), (20, 29, 0.006)])

@@ -40,7 +40,7 @@ MEASURED_NAMES = {
     weights.DUPLICATE_NAME,
     deformation.STRETCH_NAME, deformation.FLIPS_NAME, deformation.VOLUME_NAME, deformation.SPIKES_NAME,
     deformation.CHANGES_NAME,
-    kinematics.REVERSE_BEND_NAME, kinematics.FLOOR_SINK_NAME, kinematics.FOOT_SLIDE_NAME,
+    kinematics.REVERSE_BEND_NAME, kinematics.FLOOR_SINK_NAME, kinematics.FOOT_SLIDE_NAME, kinematics.FLOOR_GLIDE_NAME,
     kinematics.UNREACHABLE_NAME, kinematics.BONE_JUMPS_NAME,
 }
 
@@ -307,13 +307,6 @@ class KnownMissTest(SelfCheckBase):
 
     def test_cases_are_really_broken(self):
         """見本は本当に壊れていて（測る道具とは別の計算で確かめる）、ほかの測る物はどれも変わらない"""
-        skating = KNOWN_MISSES["skating_foot"].apply(self.clean)
-        sole = skating.soles[:, 0]
-        stance = slice(0, broken_samples.SWING_FRAMES)
-        self.assertLessEqual(float(sole[stance, 2].max()) - skating.floor_z, thresholds.FOOT_CONTACT_HEIGHT)
-        glide = float(np.hypot(*(sole[stance][-1, :2] - sole[stance][0, :2])))
-        self.assertGreater(glide, thresholds.FOOT_SLIDE_TOLERANCE)
-
         coarse = KNOWN_MISSES["coarse_cloth"].apply(self.clean)
         self.assertGreater(poke_through_depth(coarse), thresholds.PENETRATION_RED)
         self.assertEqual(len(mesh_check.boundary_edges(coarse.cloth_triangles)), 0)
@@ -326,16 +319,25 @@ class KnownMissTest(SelfCheckBase):
                     self.assertEqual(measurement.signal, self.baseline[key].signal, measurement.reason)
 
     @unittest.expectedFailure
-    def test_fast_foot_glide_is_found(self):
-        """床の高さのまま速く滑る足：foot_contacts が「遅い」フレームだけを着いているとみなすので、いまは足すべりが緑"""
-        case = KNOWN_MISSES["skating_foot"]
-        self.assert_signals(measure_sample(case.apply(self.clean)), case.finds[0], case.expected, "skating_foot")
-
-    @unittest.expectedFailure
     def test_body_through_coarse_cloth_is_found(self):
         """粗い服の面のまん中を突き抜ける体：服の頂点だけを調べるので、いまはめり込みが緑"""
         case = KNOWN_MISSES["coarse_cloth"]
         self.assert_signals(measure_sample(case.apply(self.clean)), case.finds[0], case.expected, "coarse_cloth")
+
+
+class FloorGlideTest(SelfCheckBase):
+    def test_skating_foot_is_low_and_glides_but_foot_slide_stays_green(self):
+        """速い足すべりの見本は、床の高さのまま横に長く動く。foot_slide は緑のままで、floor_glide だけが赤"""
+        skating = BREAKAGES["skating_foot"].apply(self.clean)
+        sole = skating.soles[:, 0]
+        stance = slice(0, broken_samples.SWING_FRAMES)
+        self.assertLessEqual(float(sole[stance, 2].max()) - skating.floor_z, thresholds.FOOT_CONTACT_HEIGHT)
+        glide = float(np.hypot(*(sole[stance][-1, :2] - sole[stance][0, :2])))
+        self.assertGreater(glide, thresholds.FOOT_SLIDE_TOLERANCE)
+        results = measure_sample(skating)
+        self.assertEqual(results["left/foot_slide"].signal, Signal.GREEN)
+        self.assertEqual(results["left/floor_glide"].signal, Signal.RED)
+        self.assertAlmostEqual(results["left/floor_glide"].value, glide, delta=thresholds.FOOT_SLIDE_TOLERANCE)
 
 
 # MARK: - 再現性

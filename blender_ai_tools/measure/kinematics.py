@@ -47,6 +47,7 @@ STEP_CHUNK_QUATERNIONS = 1 << 16
 REVERSE_BEND_NAME = "reverse_bend"
 FLOOR_SINK_NAME = "floor_sink"
 FOOT_SLIDE_NAME = "foot_slide"
+FLOOR_GLIDE_NAME = "floor_glide"
 UNREACHABLE_NAME = "unreachable_frames"
 BONE_JUMPS_NAME = "bone_jumps"
 
@@ -417,6 +418,40 @@ def slide_distances(foot: Any, contacts: Any) -> list[tuple[int, int, float]]:
     return [(int(start), int(end), float(distance)) for start, end, distance in zip(starts, ends, maxima)]
 
 
+def floor_glides(foot: Any, *, fps: float, floor_z: float = 0.0, height: float = thresholds.FOOT_CONTACT_HEIGHT,
+                 speed: float = thresholds.FOOT_CONTACT_SPEED,
+                 min_frames: int = thresholds.FOOT_GLIDE_MIN_FRAMES) -> list[tuple[int, int, float]]:
+    """床の上のすべり：足が床の高さのまま、上下に動かずに、横へ速く動いた距離。(始まり, 終わり, 距離) の一覧。
+
+    - 区間は「床からの高さが height 以下、かつ上下の速さが speed 以下」のフレームが min_frames 以上続く所
+      （足を上げ下ろしするフレームは、上下に動くので入らない）。
+    - 距離は、区間の中で、横（XY）の速さが speed を超えた1フレームごとの動きの合計（メートル）。
+      ゆっくりのすべりは foot_slide が数えるので、ここでは数えない（同じすべりを2回数えない）。
+    - foot_contacts は「遅い」フレームだけを着いているとみなすので、速く滑る足は foot_slide に出ない。それをここで見つける。
+    - foot は (F, 3)。NaN の位置は ValueError。
+    """
+    p = _as_track(foot, "foot")
+    rate = _as_real(fps, "fps", positive=True)
+    floor = _as_real(floor_z, "floor_z")
+    max_height = _as_real(height, "height", nonnegative=True)
+    max_speed = _as_real(speed, "speed", nonnegative=True)
+    if isinstance(min_frames, bool) or not isinstance(min_frames, (int, np.integer)) or min_frames < 1:
+        raise ValueError(f"min_frames は 1 以上の整数にしてください（いまの値：{min_frames!r}）")
+    if len(p) < 2:
+        return []
+    vertical = np.abs(np.gradient(p[:, 2]) * rate)
+    mask = ((p[:, 2] - floor) <= max_height) & (vertical <= max_speed)
+    steps = np.hypot(*np.diff(p[:, :2], axis=0).T)  # フレーム i から i+1 への横の動き
+    fast = steps * rate > max_speed
+    result = []
+    for start, end in spans(mask):
+        if end - start + 1 < min_frames:
+            continue
+        inside = slice(start, end)  # 区間の中のフレームどうしの動き
+        result.append((start, end, float(steps[inside][fast[inside]].sum())))
+    return result
+
+
 # MARK: - 足が届かないフレーム
 
 def _as_chain_length(chain_length: Any, frame_count: int) -> np.ndarray | float:
@@ -753,6 +788,45 @@ def summarize_slide(slides: Iterable[Sequence[Any]], *,
         return Measurement(FOOT_SLIDE_NAME, value, "m", Signal.GRAY,
                            "足すべりを測れなかった区間があります（そこに足すべりが隠れているかもしれません）", details)
     return Measurement(FOOT_SLIDE_NAME, value, "m", Signal.GREEN, "", details)
+
+
+def summarize_glide(slides: Iterable[Sequence[Any]], *,
+                    tolerance: float = thresholds.FOOT_SLIDE_TOLERANCE) -> Measurement:
+    """床の上のすべり（floor_glides の答え）を、1つの信号にまとめる（名前 "floor_glide"、単位 "m"）。決まりは summarize_slide と同じ。
+
+    - slides は floor_glides の答え（(始まり, 終わり, 距離) の一覧）。距離の NaN は「測れなかった区間」。
+    - 値は、いちばん大きい足すべり。
+    - 赤：tolerance より大きい（ちょうどは赤にしない）。
+    - 灰：着いている区間が1つも無い（足すべりを測れない）、全部測れなかった、または赤でなく、測れなかった区間がある。
+    - details："slide_spans"（tolerance を超えた区間 (始まり, 終わり, 距離)。全部）、"worst_span"、区間とフレームの数。
+    """
+    items = _as_slides(slides)
+    tol = _as_real(tolerance, "tolerance", nonnegative=True)
+    if not items:
+        return Measurement.unmeasured(FLOOR_GLIDE_NAME, "m", "足が床の高さで止まっている区間がありません（床の上のすべりを測れません）")
+    measured = [item for item in items if not math.isnan(item[2])]
+    details: dict[str, Any] = {
+        "span_count": len(items),
+        "contact_frame_count": sum(end - start + 1 for start, end, _ in items),
+        "tolerance": tol,
+        "slide_spans": [item for item in measured if item[2] > tol],
+        "unmeasured_count": len(items) - len(measured),
+    }
+    if not measured:
+        return Measurement.unmeasured(FLOOR_GLIDE_NAME, "m", "床の上のすべりを測れた区間がありません", details)
+    worst = max(measured, key=lambda item: item[2])  # 同じ距離なら前の区間
+    details["worst_span"] = worst
+    value = worst[2]
+    unmeasured = details["unmeasured_count"] > 0
+    if value > tol:
+        reason = "床の高さのまま、足が速く滑っています"
+        if unmeasured:
+            reason += "（測れなかった区間もあります）"
+        return Measurement(FLOOR_GLIDE_NAME, value, "m", Signal.RED, reason, details)
+    if unmeasured:
+        return Measurement(FLOOR_GLIDE_NAME, value, "m", Signal.GRAY,
+                           "床の上のすべりを測れなかった区間があります（そこにすべりが隠れているかもしれません）", details)
+    return Measurement(FLOOR_GLIDE_NAME, value, "m", Signal.GREEN, "", details)
 
 
 def summarize_unreachable(mask: Any) -> Measurement:

@@ -84,6 +84,7 @@ TEXTS: dict[str, dict[str, str]] = {
     "report.item_reverse_bend": {"ja": "ひざ・ひじの逆曲がり", "en": "Reverse knee/elbow bend"},
     "report.item_floor_sink": {"ja": "床への沈み", "en": "Sinking into the floor"},
     "report.item_foot_slide": {"ja": "足すべり", "en": "Foot sliding"},
+    "report.item_floor_glide": {"ja": "床の上のすべり", "en": "Gliding along the floor"},
     "report.item_unreachable_frames": {"ja": "届かないフレーム", "en": "Unreachable frames"},
     "report.item_bone_jumps": {"ja": "骨の跳び", "en": "Bone jumps"},
     "report.item_pose_course": {"ja": "確かめの動き（全部）", "en": "Pose course (all)"},

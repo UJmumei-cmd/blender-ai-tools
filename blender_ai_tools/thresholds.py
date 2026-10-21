@@ -136,6 +136,8 @@ FOOT_CONTACT_HEIGHT = mm(20.0)
 FOOT_CONTACT_SPEED = 0.1  # m/s
 # 着いている間に滑ってよい距離（仮）
 FOOT_SLIDE_TOLERANCE = mm(5.0)
+# 床の上のすべり（速く滑る足）とみなすのに、足が床の高さで上下に動かずにいるフレームの数（仮。本物の VMD で決め直す）
+FOOT_GLIDE_MIN_FRAMES = 3
 # 目標までの距離が鎖の長さをこの割合より超えたら「届かない」（仮）
 IK_REACH_TOLERANCE = 0.01
 # 1フレームで回ってよい角度。これを超えたら「跳ぶ」（仮）

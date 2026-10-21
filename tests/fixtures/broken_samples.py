@@ -419,6 +419,8 @@ def measure_sample(sample: Sample, *, chunk_size: int | None = None) -> dict[str
         contacts = kinematics.foot_contacts(sole, fps=sample.fps, floor_z=sample.floor_z)
         results[f"{label}/{kinematics.FOOT_SLIDE_NAME}"] = kinematics.summarize_slide(
             kinematics.slide_distances(sole, contacts))
+        results[f"{label}/{kinematics.FLOOR_GLIDE_NAME}"] = kinematics.summarize_glide(
+            kinematics.floor_glides(sole, fps=sample.fps, floor_z=sample.floor_z))
         results[f"{label}/{kinematics.UNREACHABLE_NAME}"] = kinematics.summarize_unreachable(
             kinematics.unreachable_frames(hip, sample.ik_targets[:, side], sample.leg_lengths[side]))
     results[f"feet/{kinematics.FLOOR_SINK_NAME}"] = kinematics.summarize_sink(
@@ -881,13 +883,13 @@ def foot_in_air(sample: Sample) -> Sample:
     return replace(sample, soles=soles)
 
 
-# MARK: - いまの測り方では見つからない壊れ方（KNOWN_MISSES）
+# MARK: - 速い足すべり（floor_glide で見つかる。前は KNOWN_MISSES だった）
 
 def skating_foot(sample: Sample) -> Sample:
     """速い足すべり：左足の裏が、床の高さのまま（z = 0）、前半の後ろの半分のフレームで、FOOT_CONTACT_SPEED の4倍の速さで
     後ろ（+Y）へ滑る（そのあとの足の上げ下ろしも、滑った所から続ける）。
-    いまの foot_contacts は「低くて、遅い」フレームだけを床に着いているとみなすので、速く滑る足は床に着いていないことになり、
-    足すべり（foot_slide）として数えられない（緑のまま）。足の裏の並びのほかは変えない"""
+    foot_contacts は「低くて、遅い」フレームだけを床に着いているとみなすので、足すべり（foot_slide）は緑のまま。
+    床の上のすべり（floor_glide）が赤になる。足の裏の並びのほかは変えない"""
     frames = np.arange(len(sample.soles))
     start = SWING_FRAMES // 2
     soles = _writable(sample.soles)
@@ -1001,17 +1003,18 @@ BREAKAGES: dict[str, Breakage] = {
     "sliding_foot": Breakage(sliding_foot, (kinematics.FOOT_SLIDE_NAME,), Signal.RED),
     "unreachable_target": Breakage(unreachable_target, (kinematics.UNREACHABLE_NAME,), Signal.YELLOW),
     "jumping_bone": Breakage(jumping_bone, (kinematics.BONE_JUMPS_NAME,), Signal.RED),
+    # 速く滑る足は foot_slide（遅いフレームだけ）には出ず、床の上のすべり（floor_glide）で見つかる
+    "skating_foot": Breakage(skating_foot, (kinematics.FLOOR_GLIDE_NAME,), Signal.RED),
 }
 
 GRAY_CASES: dict[str, Breakage] = {
     "sideways_leg": Breakage(sideways_leg, (kinematics.REVERSE_BEND_NAME,), Signal.GRAY),
-    "foot_in_air": Breakage(foot_in_air, (kinematics.FOOT_SLIDE_NAME,), Signal.GRAY),
+    "foot_in_air": Breakage(foot_in_air, (kinematics.FOOT_SLIDE_NAME, kinematics.FLOOR_GLIDE_NAME), Signal.GRAY),
 }
 
 # いまの測り方では見つからない壊れ方。finds が expected になるのが正しいが、いまはならない
 # （test_self_check の KnownMissTest で、unittest.expectedFailure にしている。直したら BREAKAGES へ移す）
 KNOWN_MISSES: dict[str, Breakage] = {
-    "skating_foot": Breakage(skating_foot, (kinematics.FOOT_SLIDE_NAME,), Signal.RED),
     "coarse_cloth": Breakage(coarse_cloth, (geometry.PENETRATION_NAME,), Signal.RED),
 }
 

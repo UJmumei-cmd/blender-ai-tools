@@ -274,6 +274,7 @@ def all_summaries(empty: bool) -> list[tuple[str, Measurement]]:
             ("reverse_bend", kinematics.summarize_reverse_bend([])),
             ("sink", kinematics.summarize_sink([])),
             ("slide", kinematics.summarize_slide([])),
+            ("glide", kinematics.summarize_glide([])),
             ("unreachable", kinematics.summarize_unreachable(np.zeros(0, dtype=bool))),
             ("jumps", kinematics.summarize_jumps(np.zeros((0, 3), dtype=bool))),
             ("visible", visibility.summarize_visible_points(np.zeros((0, 3)), {}, mesh=RENDER_MESH)),
@@ -294,6 +295,7 @@ def all_summaries(empty: bool) -> list[tuple[str, Measurement]]:
         ("reverse_bend", kinematics.summarize_reverse_bend([10.0, 20.0])),
         ("sink", kinematics.summarize_sink([0.0, 0.0])),
         ("slide", kinematics.summarize_slide([(0, 3, 0.0)])),
+        ("glide", kinematics.summarize_glide([(0, 3, 0.0)])),
         ("unreachable", kinematics.summarize_unreachable(np.array([False, False]))),
         ("jumps", kinematics.summarize_jumps(np.zeros((2, 3), dtype=bool))),
         ("visible", visibility.summarize_visible_points(point, renders_for(point), mesh=RENDER_MESH)),
@@ -309,7 +311,7 @@ NAME_CONSTANTS = {
     deformation.SPIKES_NAME,
     weights.OVER_LIMIT_NAME, weights.UNWEIGHTED_NAME, weights.NOT_NORMALIZED_NAME, weights.NEGATIVE_NAME,
     weights.DUPLICATE_NAME,
-    kinematics.REVERSE_BEND_NAME, kinematics.FLOOR_SINK_NAME, kinematics.FOOT_SLIDE_NAME,
+    kinematics.REVERSE_BEND_NAME, kinematics.FLOOR_SINK_NAME, kinematics.FOOT_SLIDE_NAME, kinematics.FLOOR_GLIDE_NAME,
     kinematics.UNREACHABLE_NAME, kinematics.BONE_JUMPS_NAME, visibility.VISIBLE_POINTS_NAME,
 }
 
@@ -326,7 +328,7 @@ class MeasurementConventionsTest(unittest.TestCase):
                 self.assertIn(result.unit, UNITS)
                 seen.add(result.name)
         self.assertEqual(seen, NAME_CONSTANTS, "名前の定数と、summarize の返す名前が1対1でありません")
-        self.assertEqual(len(NAME_CONSTANTS), 25, "名前が重なっています")
+        self.assertEqual(len(NAME_CONSTANTS), 26, "名前が重なっています")
 
     def test_good_samples_are_not_red_or_gray(self):
         """壊れていない形・動き（そろった球、同じ姿勢）では、赤も灰も出ない（見える点は1つあるので赤）"""
@@ -352,7 +354,7 @@ class MeasurementConventionsTest(unittest.TestCase):
             deformation.STRETCH_NAME: "ratio", deformation.VOLUME_NAME: "ratio", deformation.SPIKES_NAME: "ratio",
             deformation.FLIPS_NAME: "count", deformation.CHANGES_NAME: "count",
             kinematics.REVERSE_BEND_NAME: "deg", kinematics.FLOOR_SINK_NAME: "m", kinematics.FOOT_SLIDE_NAME: "m",
-            kinematics.UNREACHABLE_NAME: "count", kinematics.BONE_JUMPS_NAME: "count",
+            kinematics.FLOOR_GLIDE_NAME: "m", kinematics.UNREACHABLE_NAME: "count", kinematics.BONE_JUMPS_NAME: "count",
         }
         units = {result.name: result.unit for _, result in all_summaries(empty=False)}
         for name, unit in expected.items():
@@ -468,6 +470,8 @@ class PartialUnmeasuredTest(unittest.TestCase):
          [0.0, math.nan], None, [thresholds.FLOOR_SINK_TOLERANCE * 2.0, math.nan]),
         ("slide", kinematics.summarize_slide,
          [(0, 2, 0.0), (4, 5, math.nan)], None, [(0, 2, thresholds.FOOT_SLIDE_TOLERANCE * 2.0), (4, 5, math.nan)]),
+        ("glide", kinematics.summarize_glide,
+         [(0, 2, 0.0), (4, 5, math.nan)], None, [(0, 2, thresholds.FOOT_SLIDE_TOLERANCE * 2.0), (4, 5, math.nan)]),
     ]
 
     def test_gray_unless_red(self):
@@ -488,7 +492,7 @@ class PartialUnmeasuredTest(unittest.TestCase):
             for data, expected in ((green, Signal.GREEN), (yellow, Signal.YELLOW), (red, Signal.RED)):
                 if data is None:
                     continue
-                if name == "slide":
+                if name in ("slide", "glide"):
                     clean = [item for item in data if not math.isnan(item[2])]
                 else:
                     clean = [value for value in data if not math.isnan(value)]
