@@ -34,7 +34,8 @@
 1. **重いボタンを画面につなぐ**（`ui/`）：書き出して確かめる（E1＋E2）、確かめの動き（A5）、版の保存と前の版との比べ（A6）。目録の道具はできているので、画面は目録を呼ぶだけにする。重い物は `jobs/launcher_bpy`（`make_queue`・`make_job`・`start_polling`）で裏の Blender に出し、進み具合と中止のボタンを出す。`JobQueue` は画面で1つだけ作り、register で `recover()`、unregister で `stop()`（CLAUDE.md 7章）。
 2. **A11 の画面**：報告のタブ（緑・黄・赤・灰の一覧、いちばん上の一言、1件ずつ［直す］［このままでよい］［あとで］、HTML を開く）。答えは `report/decisions.py` の `decisions.json`（作業フォルダ）に記録し、赤の数を次の版と比べる（`compare_red_count`）。A11 の厳しい点検もここで。
 3. 部品どうしをそろえる点検（文の置き場所、基準の数字、名前のそろい方）を、1と2のあとにもう一度。
-4. そのあとの段階1の残り：A4 の自己テスト（わざと壊した見本 約 20 種）、E4（`MotionLibrary.swift` が要る）、B4・B5・B6、M1・M4・M6。
+4. 段階2のハーネスは `docs/harness.md` の設計で、段階1のあとに作る（LLM は Flash Next を初めの値に、Gemma 26B・31B も選べる）。
+5. そのあとの段階1の残り：A4 の自己テスト（わざと壊した見本 約 20 種）、E4（`MotionLibrary.swift` が要る）、B4・B5・B6、M1・M4・M6。
 
 ## 3. ユーザーと決めたこと
 
