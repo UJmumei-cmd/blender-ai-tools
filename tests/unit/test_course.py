@@ -1,6 +1,7 @@
 """A5 確かめの動き：ポーズごとの確かめ・まとめ・報告の文（motion/course.py）を確かめる（bpy なし）"""
 
 import math
+import json
 import unittest
 
 import numpy as np
@@ -401,6 +402,9 @@ class SummaryAndReportTest(unittest.TestCase):
         self.assertEqual(m.details["per_pose"]["bow"]["signal"], Signal.GREEN)
         self.assertEqual(m.details["per_pose"]["squat"]["checks"], {KNEE_CHECK: Signal.RED, CLOTH_CHECK: Signal.YELLOW})
         self.assertEqual(m.reason, texts.text("motion.summary_reason", poses="2", red="1", gray="1", yellow="1"))
+        self.assertEqual(m.details["counts"], {"green": 2, "yellow": 1, "gray": 1, "red": 1})
+        # 目録の道具 motion.run_course が結果に入れるので、JSON にできる形（信号の辞書のキーは文字）
+        json.dumps(m.to_data(), ensure_ascii=False, allow_nan=False)
 
     def test_all_green_and_empty(self):
         green = summarize_course([Event("bow", KNEE_CHECK, measured())])

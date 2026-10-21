@@ -48,6 +48,21 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(result["mapping"]["左腕"], "左腕")
         self.assertEqual(result["shadowed"], {"J_Bip_L_UpperArm": "左腕"})
 
+    def test_change_data_has_both_languages(self):
+        """版 2 の versions.compare_with_previous：変わった所ごとに、文の形のキーと日本語・英語の文を返す（報告の題に使う）"""
+        from blender_ai_tools.registry import _change_data
+        from blender_ai_tools.versions.diff import Change
+
+        self.assertEqual(self.catalog.get("versions.compare_with_previous").version, "2")
+        change = Change(category="vertices", object="体", text_key="versions.vertices_moved",
+                        values={"object": "体", "count": 3, "distance_mm": 1.5}, count=3, outside_allowed=True)
+        data = _change_data(change)
+        self.assertEqual(set(data), {"category", "object", "count", "outside_allowed", "key", "texts"})
+        self.assertEqual(data["key"], "versions.vertices_moved")
+        self.assertEqual(data["texts"], {"ja": change.text("ja"), "en": change.text("en")})
+        self.assertIn("1.500 mm", data["texts"]["en"])
+        json.dumps(data, ensure_ascii=False)
+
     def test_result_shape_and_version(self):
         """結果の項目は決まった形。項目を足したら道具の版を上げる（A15 の記録で、前の結果と比べられる）"""
         self.assertEqual(self.catalog.get("bones.map_names").version, "2")

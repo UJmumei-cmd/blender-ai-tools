@@ -66,6 +66,7 @@ __all__ = [
     "ConvertResult",
     "KoumakanPaths",
     "build_command",
+    "check_output_dir",
     "koumakan_paths",
     "parse_summary",
     "run_convert",
@@ -199,6 +200,15 @@ def _refuse_protected(folder: Path, paths: KoumakanPaths) -> None:
     if _is_inside(folder, paths.converter_dir):
         raise ValueError(f"出力フォルダが、convert_blend.py のあるフォルダ（またはその中）です：{folder}。"
                          "紅魔館の書き出しのスクリプトの横には書きません")
+
+
+def check_output_dir(output_dir: str | os.PathLike[str], repo: str | os.PathLike[str]) -> Path:
+    """出力フォルダが、書いてはいけない場所（アプリの Model フォルダ・convert_blend.py のフォルダとその中）でないかを、
+    書き出す前に確かめる（画面が仕事を出す前に使う）。書いてはいけない場所なら ValueError。フォルダは作らない"""
+    paths = koumakan_paths(repo)
+    folder = _path_argument(output_dir, "出力フォルダ").resolve()
+    _refuse_protected(folder, paths)
+    return folder
 
 
 def _prepare_output_dir(output_dir: Any, paths: KoumakanPaths) -> Path:

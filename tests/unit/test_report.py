@@ -202,6 +202,25 @@ class TextsTest(unittest.TestCase):
         self.assertEqual(texts.problems(), [])
         self.assertIn("report.headline_red", texts.TEXTS)
 
+    def test_every_measure_name_has_a_title(self):
+        """measure/ の測った結果の名前（*_NAME の定数）には、どれも報告の題 report.item_<名前> がある"""
+        import ast
+        from pathlib import Path
+
+        folder = Path(__file__).resolve().parents[2] / "blender_ai_tools" / "measure"
+        names = {}
+        for path in sorted(folder.glob("*.py")):
+            for node in ast.parse(path.read_text(encoding="utf-8")).body:
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) \
+                        and isinstance(node.value.value, str):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id.endswith("_NAME"):
+                            names[f"{path.name}:{target.id}"] = node.value.value
+        self.assertGreaterEqual(len(names), 20)  # 見張りそのものが、定数を見つけている
+        for where, name in sorted(names.items()):
+            with self.subTest(constant=where, name=name):
+                self.assertIn(f"report.item_{name}", texts.TEXTS)
+
 
 if __name__ == "__main__":
     unittest.main()

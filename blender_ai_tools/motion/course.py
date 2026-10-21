@@ -524,7 +524,7 @@ def summarize_course(events: Iterable[Event]) -> Measurement:
     details：
     - "per_pose"：ポーズの名前 → {"signal": いちばん重い信号, "checks": {確かめ: 信号}}（出てきた順）
     - "red_events"・"gray_events"・"yellow_events"：(ポーズ, 確かめ) の並び
-    - "counts"：信号 → 出来事の数、"pose_count"：ポーズの数（アプリの動きは数えない）、"event_count"
+    - "counts"：信号の名前（"green"・"yellow"・"gray"・"red"）→ 出来事の数、"pose_count"：ポーズの数（アプリの動きは数えない）、"event_count"
     """
     values = _as_events(events)
     if not values:
@@ -534,14 +534,15 @@ def summarize_course(events: Iterable[Event]) -> Measurement:
         entry = per_pose.setdefault(event.pose, {"signal": event.signal, "checks": {}})
         entry["checks"][event.check] = event.signal
         entry["signal"] = max(entry["signal"], event.signal)
-    counts = {signal: sum(1 for event in values if event.signal == signal) for signal in Signal}
+    # キーは信号の名前の文字（"green"・"yellow"・"gray"・"red"）。JSON に書けるように（to_data・裏の係の result.json）
+    counts = {signal.name.lower(): sum(1 for event in values if event.signal == signal) for signal in Signal}
     pose_count = len({event.pose for event in values if event.check != APP_MOTION_CHECK})
     signal = worst(event.signal for event in values)
     if signal == Signal.GREEN:
         reason = texts.text("motion.summary_all_green", poses=str(pose_count))
     else:
-        reason = texts.text("motion.summary_reason", poses=str(pose_count), red=str(counts[Signal.RED]),
-                            gray=str(counts[Signal.GRAY]), yellow=str(counts[Signal.YELLOW]))
+        reason = texts.text("motion.summary_reason", poses=str(pose_count), red=str(counts["red"]),
+                            gray=str(counts["gray"]), yellow=str(counts["yellow"]))
     details = {
         "per_pose": per_pose,
         "red_events": [(e.pose, e.check) for e in values if e.signal == Signal.RED],
@@ -551,7 +552,7 @@ def summarize_course(events: Iterable[Event]) -> Measurement:
         "pose_count": pose_count,
         "event_count": len(values),
     }
-    return Measurement(COURSE_NAME, float(counts[Signal.RED]), "count", signal, reason, details)
+    return Measurement(COURSE_NAME, float(counts["red"]), "count", signal, reason, details)
 
 
 def pose_label(pose: str, *, language: str | None = None) -> str:

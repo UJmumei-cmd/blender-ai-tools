@@ -12,7 +12,6 @@ TEXTS: dict[str, dict[str, str]] = {
     "screen.panel_title": {"ja": "AI の道具", "en": "AI Tools"},
     "screen.section_model": {"ja": "モデル", "en": "Model"},
     "screen.section_bones": {"ja": "骨", "en": "Bones"},
-    "screen.section_next": {"ja": "書き出し・確かめの動き・版", "en": "Export, test motions, versions"},
     "screen.stage_note": {
         "ja": "段階1：ボタンだけで動きます（AI はつないでいません）",
         "en": "Stage 1: everything works with buttons (no AI is connected)",
@@ -242,33 +241,185 @@ TEXTS: dict[str, dict[str, str]] = {
         "en": "Missing semi-standard bones ({count}; checks that need them become gray)",
     },
 
-    # MARK: - 次の段階（A10 から）
-    "screen.next_export": {"ja": "書き出す", "en": "Export"},
-    "screen.next_export_tip": {
-        "ja": "紅魔館の convert_blend.py で、アプリ用に書き出します（E1。裏で動かす係 A10 ができたら使えます）",
-        "en": "Export for the app with Koumakan's convert_blend.py (E1; available once the background worker A10 "
-              "is ready)",
+    # MARK: - 確かめと書き出し（A6 版・E1＋E2・A5）
+    "screen.needs_saved_file": {
+        "ja": "先にファイルを保存してください（版・仕事・記録を、ファイルの横の作業フォルダに置くため）",
+        "en": "Save the file first (versions, jobs and records are kept in the work folder next to the file)",
     },
-    "screen.next_motion_check": {"ja": "確かめの動き", "en": "Test motions"},
-    "screen.next_motion_check_tip": {
-        "ja": "決まったポーズとアプリの動きで、壊れないかを確かめます（A5。裏で動かす係 A10 ができたら使えます）",
-        "en": "Check the model with fixed poses and the app's motions (A5; available once the background worker "
-              "A10 is ready)",
+    "screen.save_version": {"ja": "版を保存", "en": "Save version"},
+    "screen.op_save_version": {"ja": "新しい版で保存する", "en": "Save as a new version"},
+    "screen.save_version_tip": {
+        "ja": "いまの中身を、新しい版（_v001、_v002 …）として保存し、形・骨・ウェイトの記録を残します。"
+              "開いているファイルは上書きしません",
+        "en": "Save the current contents as a new version (_v001, _v002 …) with a record of shapes, bones and "
+              "weights. The open file is not overwritten",
     },
-    "screen.next_versions": {"ja": "版を保存する", "en": "Save a version"},
-    "screen.next_versions_tip": {
-        "ja": "確かめたあとで、新しい版（_v001 など）として保存します（A6。裏で動かす係 A10 ができたら使えます）",
-        "en": "Save a checked result as a new version (_v001 and so on) (A6; available once the background "
-              "worker A10 is ready)",
+    "screen.save_version_failed": {"ja": "版を保存できませんでした：{error}", "en": "Could not save a version: {error}"},
+    "screen.compare_versions": {"ja": "前の版と比べる", "en": "Compare"},
+    "screen.op_compare_versions": {"ja": "前の版と比べる", "en": "Compare with the previous version"},
+    "screen.compare_versions_tip": {
+        "ja": "いまの中身を、いちばん新しい版の記録と比べて、変わった所を報告にします（何も変えません）",
+        "en": "Compare the current contents with the record of the newest version and list the changes in the "
+              "report (nothing is changed)",
     },
-    "screen.next_note": {
-        "ja": "これらは、裏で動かす係（A10）ができたら、別の Blender で動きます",
-        "en": "These will run in a separate Blender through the background worker (A10), coming next",
+    "screen.compare_failed": {"ja": "前の版と比べられませんでした：{error}", "en": "Could not compare: {error}"},
+    "screen.versions_title": {"ja": "保存した版（{count} 個）", "en": "Saved versions ({count})"},
+    "screen.versions_none": {"ja": "まだ版を保存していません", "en": "No version has been saved yet"},
+    "screen.versions_unsaved": {
+        "ja": "ファイルを保存すると、版を保存できます",
+        "en": "Save the file to be able to save versions",
     },
-    "screen.op_coming_soon": {"ja": "まだ使えない道具", "en": "Not available yet"},
-    "screen.coming_soon": {
-        "ja": "まだ使えません。裏で動かす係（A10）ができたら使えます",
-        "en": "Not available yet. It becomes available with the background worker (A10)",
+    "screen.versions_more": {"ja": "ほか {count} 個（古い版）", "en": "{count} more (older versions)"},
+    "screen.export_and_check": {"ja": "書き出して確かめる", "en": "Export and check"},
+    "screen.op_export_and_check": {"ja": "書き出して確かめる", "en": "Export and check"},
+    "screen.export_and_check_tip": {
+        "ja": "いちばん新しい保存した版を、紅魔館の convert_blend.py で作業フォルダに書き出し、読み戻して確かめます"
+              "（E1＋E2。裏の Blender で動きます。アプリのフォルダには書きません）",
+        "en": "Export the newest saved version with Koumakan's convert_blend.py into the work folder, read it back "
+              "and check it (E1+E2; runs in a background Blender; nothing is written into the app folder)",
+    },
+    "screen.export_failed": {"ja": "書き出しを始められませんでした：{error}", "en": "Could not start the export: {error}"},
+    "screen.export_input": {"ja": "書き出す版：{name}", "en": "Version to export: {name}"},
+    "screen.export_needs_version": {
+        "ja": "書き出す版がありません。先に「版を保存」を押してください（書き出すのは、保存した版です）",
+        "en": "There is no version to export. Press “Save version” first (the saved version is exported)",
+    },
+    "screen.export_needs_koumakan": {
+        "ja": "紅魔館の場所を、拡張機能の設定に書いてください（書き出しに要ります）",
+        "en": "Set the Koumakan repository in the add-on preferences (needed to export)",
+    },
+    "screen.export_koumakan_invalid": {
+        "ja": "紅魔館の場所が正しくありません：{error}",
+        "en": "The Koumakan repository setting is not valid: {error}",
+    },
+    "screen.export_output_exists": {
+        "ja": "出力フォルダがもうあります：{path}",
+        "en": "The output folder already exists: {path}",
+    },
+    "screen.run_course": {"ja": "確かめの動き", "en": "Pose course"},
+    "screen.op_run_course": {"ja": "確かめの動き", "en": "Run the pose course"},
+    "screen.run_course_tip": {
+        "ja": "いまの形の写しに、決まったポーズを付けて、ひざの逆曲がり・床への沈み・服からの体のはみ出しを確かめます"
+              "（A5。裏の Blender で動きます。開いているファイルは保存しません）",
+        "en": "Pose a copy of the current state and check reverse knee bends, sinking into the floor and the body "
+              "showing through clothes (A5; runs in a background Blender; the open file is not saved)",
+    },
+    "screen.course_failed": {
+        "ja": "確かめの動きを始められませんでした：{error}",
+        "en": "Could not start the pose course: {error}",
+    },
+    "screen.course_copy_failed": {
+        "ja": "いまの形の写しを保存できなかったので、仕事を取り消しました：{error}",
+        "en": "The copy of the current state could not be saved, so the job was withdrawn: {error}",
+    },
+    "screen.course_note": {
+        "ja": "いまの形の写しを、裏の Blender で確かめます（アプリのカメラから見えるかも調べるので、時間がかかります）",
+        "en": "A copy of the current state is checked in a background Blender (it also checks what the app camera "
+              "can see, so it takes a while)",
+    },
+    "screen.job_queued": {"ja": "仕事を順番待ちに入れました：{tool}", "en": "The job was queued: {tool}"},
+
+    # MARK: - 裏の仕事（A10）
+    "screen.section_checks": {"ja": "確かめと書き出し", "en": "Checks and export"},
+    "screen.section_jobs": {"ja": "裏の仕事", "en": "Background jobs"},
+    "screen.section_report": {"ja": "報告", "en": "Report"},
+    "screen.tool_export_convert_and_check": {"ja": "書き出して確かめる", "en": "Export and check"},
+    "screen.tool_motion_run_course": {"ja": "確かめの動き", "en": "Pose course"},
+    "screen.jobs_none": {"ja": "仕事はありません", "en": "No jobs"},
+    "screen.jobs_more": {"ja": "ほか {count} 件（古い仕事）", "en": "{count} more (older jobs)"},
+    "screen.jobs_unreadable": {
+        "ja": "読めない仕事のフォルダが {count} 個あります",
+        "en": "{count} job folders cannot be read",
+    },
+    "screen.job_title": {"ja": "{tool}：{status}", "en": "{tool}: {status}"},
+    "screen.job_created": {"ja": "出した時刻：{time}", "en": "Queued at: {time}"},
+    "screen.job_cleaning": {"ja": "片付け中", "en": "Cleaning up"},
+    "screen.job_step": {"ja": "{step} / {total}：{message}", "en": "{step} / {total}: {message}"},
+    "screen.cancel_job": {"ja": "中止", "en": "Cancel"},
+    "screen.op_cancel_job": {"ja": "仕事を中止する", "en": "Cancel the job"},
+    "screen.cancel_job_tip": {
+        "ja": "仕事を中止します（順番待ちならすぐ。動いていれば、裏の Blender に止まるように頼みます）",
+        "en": "Cancel the job (at once when queued; when running, the background Blender is asked to stop)",
+    },
+    "screen.job_cancel_requested": {"ja": "仕事 {job_id} の中止を頼みました", "en": "Asked job {job_id} to stop"},
+    "screen.remove_job": {"ja": "一覧から消す", "en": "Remove"},
+    "screen.op_remove_job": {"ja": "仕事を一覧から消す", "en": "Remove the job from the list"},
+    "screen.remove_job_tip": {
+        "ja": "終わった仕事を一覧から消します（仕事のフォルダを消します。書き出したファイルは exports に残ります）",
+        "en": "Remove a finished job from the list (its job folder is deleted; exported files stay in exports)",
+    },
+    "screen.job_removed": {"ja": "仕事 {job_id} を一覧から消しました", "en": "Removed job {job_id} from the list"},
+    "screen.show_job_result": {"ja": "結果を見る", "en": "Show result"},
+    "screen.op_show_job_result": {"ja": "仕事の結果を見る", "en": "Show the job result"},
+    "screen.show_job_result_tip": {
+        "ja": "終わった仕事の結果を、報告に出します",
+        "en": "Show the result of the finished job in the report",
+    },
+    "screen.job_failed": {"ja": "仕事を扱えませんでした：{error}", "en": "Could not handle the job: {error}"},
+    "screen.job_missing": {"ja": "その仕事はありません：{job_id}", "en": "There is no such job: {job_id}"},
+
+    # MARK: - 報告（A11）
+    "screen.report_none": {
+        "ja": "まだ報告はありません（前の版と比べる・書き出して確かめる・確かめの動きのあとに出ます）",
+        "en": "No report yet (it appears after comparing, exporting and checking, or the pose course)",
+    },
+    "screen.report_header": {"ja": "{kind}（{time}）", "en": "{kind} ({time})"},
+    "screen.report_shown": {"ja": "報告：{headline}", "en": "Report: {headline}"},
+    "screen.item_value": {"ja": "値：{value}", "en": "Value: {value}"},
+    "screen.decision_current": {"ja": "答え：{decision}", "en": "Decision: {decision}"},
+    "screen.prop_decision": {"ja": "答え", "en": "Decision"},
+    "screen.op_decide": {"ja": "報告の項目に答える", "en": "Decide on a report item"},
+    "screen.decide_tip": {
+        "ja": "この項目を、直す・このままでよい・あとで のどれにするかを記録します（作業フォルダの decisions.json。"
+              "「このままでよい」とした物は、次の版でも数えません）",
+        "en": "Record whether to fix this item, leave it as is, or decide later (decisions.json in the work folder; "
+              "items left as is are not counted in later versions either)",
+    },
+    "screen.op_clear_decision": {"ja": "答えを消す", "en": "Remove the decision"},
+    "screen.clear_decision_tip": {
+        "ja": "この項目の答えを消します（まだ決めていない、に戻します）",
+        "en": "Remove the decision for this item (back to undecided)",
+    },
+    "screen.decided": {"ja": "「{title}」を「{decision}」にしました", "en": "Set “{title}” to “{decision}”"},
+    "screen.decision_cleared": {"ja": "「{title}」の答えを消しました", "en": "Removed the decision for “{title}”"},
+    "screen.decision_failed": {"ja": "答えを記録できませんでした：{error}", "en": "Could not record the decision: {error}"},
+    "screen.decisions_unreadable": {
+        "ja": "答えの記録（decisions.json）が読めません：{error}",
+        "en": "The decision record (decisions.json) cannot be read: {error}",
+    },
+    "screen.no_report": {
+        "ja": "報告がありません。先に、比べるか確かめてください",
+        "en": "There is no report. Compare or run a check first",
+    },
+    "screen.item_missing": {"ja": "報告に、その項目がありません：{item}", "en": "The report has no such item: {item}"},
+    "screen.write_report_html": {"ja": "HTML", "en": "HTML"},
+    "screen.op_write_report_html": {"ja": "報告を HTML にする", "en": "Write the report as HTML"},
+    "screen.write_report_html_tip": {
+        "ja": "いまの報告を、作業フォルダの reports に HTML のファイルとして書きます",
+        "en": "Write the current report as an HTML file into reports in the work folder",
+    },
+    "screen.open_report_html": {"ja": "開く", "en": "Open"},
+    "screen.op_open_report_html": {"ja": "報告をブラウザで開く", "en": "Open the report in a browser"},
+    "screen.open_report_html_tip": {
+        "ja": "いまの報告を HTML に書き直して、ブラウザで開きます",
+        "en": "Write the current report as HTML again and open it in a browser",
+    },
+    "screen.report_html_written": {"ja": "報告の HTML を書きました：{path}", "en": "Wrote the report HTML: {path}"},
+    "screen.report_html_at": {"ja": "HTML：{path}", "en": "HTML: {path}"},
+    "screen.report_html_failed": {
+        "ja": "報告の HTML を書けませんでした：{error}",
+        "en": "Could not write the report HTML: {error}",
+    },
+    "screen.record_baseline": {"ja": "基準にする", "en": "Set baseline"},
+    "screen.op_record_baseline": {"ja": "赤の数を基準として記録する", "en": "Record the red count as the baseline"},
+    "screen.record_baseline_tip": {
+        "ja": "いまの赤の数（「このままでよい」は除く）を、次の版と比べる基準として記録します（増えたら赤）",
+        "en": "Record the current red count (excluding items left as is) as the baseline for later versions "
+              "(an increase is red)",
+    },
+    "screen.baseline_recorded": {
+        "ja": "赤の数 {count} 件を、次の版と比べる基準として記録しました",
+        "en": "Recorded {count} red as the baseline for later versions",
     },
 
     # MARK: - エラー

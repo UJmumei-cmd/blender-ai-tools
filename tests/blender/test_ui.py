@@ -20,11 +20,17 @@ import numpy as np
 import blender_ai_tools
 from blender_ai_tools import registry, texts, ui
 from blender_ai_tools.catalog import Catalog
-from blender_ai_tools.measure.results import Signal
+from blender_ai_tools.jobs import launcher_bpy
+from blender_ai_tools.jobs import progress as jobs_progress
+from blender_ai_tools.jobs import worker as jobs_worker
+from blender_ai_tools.jobs.queue import JobQueue, WorkerProcess
+from blender_ai_tools.measure.results import Measurement, Signal
+from blender_ai_tools.motion.course import Event
+from blender_ai_tools.report import sources as report_sources
 from blender_ai_tools.model import card_bpy
 from blender_ai_tools.model.card import HEIGHT, card_text
 from blender_ai_tools.texts import text
-from blender_ai_tools.ui import labels, operators, panel, preferences, state
+from blender_ai_tools.ui import background, labels, operators, panel, preferences, state
 from tests.fixtures import mmd_model
 
 ICONS = frozenset(bpy.types.UILayout.bl_rna.functions["label"].parameters["icon"].enum_items.keys())
@@ -237,6 +243,10 @@ class RegistrationTest(unittest.TestCase):
         self.assertEqual(preferences.AIToolsPreferences.is_registered, registered)
         self.assertEqual(preferences.preferences_registered(), registered)
         self.assertEqual(bpy.app.handlers.load_post.count(state.on_load_post), 1 if registered else 0)
+        self.assertEqual(bpy.app.handlers.load_post.count(background.on_load_post), 1 if registered else 0)
+        self.assertEqual(bpy.app.handlers.save_post.count(background.on_save_post), 1 if registered else 0)
+        if not registered:
+            self.assertIsNone(background.queue())
 
     def test_register_and_unregister_twice(self):
         self.assert_registered(False)
@@ -289,7 +299,7 @@ class RegistrationTest(unittest.TestCase):
     def test_register_failure_is_undone(self):
         """登録の途中で失敗したら、登録した物を全部外し、言語も戻してから、エラーをそのまま出す"""
         texts.set_language("en")
-        with mock.patch.object(panel.VIEW3D_PT_ai_tools_next, "localize", side_effect=RuntimeError("こわれた")):
+        with mock.patch.object(panel.VIEW3D_PT_ai_tools_report, "localize", side_effect=RuntimeError("こわれた")):
             with self.assertRaisesRegex(RuntimeError, "こわれた"):
                 blender_ai_tools.register()
         self.assert_registered(False)
@@ -320,7 +330,9 @@ class RegistrationTest(unittest.TestCase):
         self.assertEqual(bpy.types.VIEW3D_PT_ai_tools.bl_category, "AI の道具")
         self.assertEqual(bpy.types.VIEW3D_PT_ai_tools.bl_label, "AI の道具")
         self.assertEqual(bpy.types.VIEW3D_PT_ai_tools_model.bl_label, "モデル")
-        self.assertEqual(bpy.types.VIEW3D_PT_ai_tools_next.bl_label, "書き出し・確かめの動き・版")
+        self.assertEqual(bpy.types.VIEW3D_PT_ai_tools_checks.bl_label, "確かめと書き出し")
+        self.assertEqual(bpy.types.VIEW3D_PT_ai_tools_jobs.bl_label, "裏の仕事")
+        self.assertEqual(bpy.types.VIEW3D_PT_ai_tools_report.bl_label, "報告")
         self.assertEqual(bpy.types.AI_TOOLS_OT_register_card.bl_label, "モデルを登録する")
         # 作り直しても、どのクラスも1回ずつ登録されている
         self.assertEqual(len(ui._registered), len(ui.CLASSES))
@@ -755,19 +767,26 @@ class PanelDrawTest(UiCase):
         bones = logs["VIEW3D_PT_ai_tools_bones"]
         self.assertEqual([call["idname"] for call in bones if call["kind"] == "operator"], ["ai_tools.check_bones"])
 
-    def test_next_steps_are_visible_but_disabled(self):
-        log = draw(panel.VIEW3D_PT_ai_tools_next)
-        buttons = calls_of(log, "ai_tools.coming_soon")
-        self.assertEqual([(call["text"], call["props"].feature, call["enabled"]) for call in buttons],
-                         [("書き出す", "export", False), ("確かめの動き", "motion_check", False),
-                          ("版を保存する", "versions", False)])
-        self.assertIn("これらは、裏で動かす係（A10）ができたら、別の Blender で動きます", label_texts(log))
-        self.assertFalse(bpy.ops.ai_tools.coming_soon.poll())
-        with self.assertRaises(RuntimeError):
-            bpy.ops.ai_tools.coming_soon(feature="export")
-        props = SimpleNamespace(feature="export")
-        self.assertEqual(operators.AI_TOOLS_OT_coming_soon.description(bpy.context, props),
-                         text("screen.next_export_tip"))
+    def test_checks_panel_without_a_saved_file(self):
+        """保存していないファイル：ボタンは見えて押せる（押すと日本語で断る）。版・仕事・報告は「まだ」と出る"""
+        logs = self.draw_all()
+        checks = logs["VIEW3D_PT_ai_tools_checks"]
+        self.assertEqual([(call["idname"], call["text"], call["enabled"]) for call in checks if call["kind"] == "operator"],
+                         [("ai_tools.save_version", "版を保存", True), ("ai_tools.compare_versions", "前の版と比べる", True),
+                          ("ai_tools.export_and_check", "書き出して確かめる", True),
+                          ("ai_tools.run_course", "確かめの動き", True)])
+        lines = label_texts(checks)
+        self.assertIn("ファイルを保存すると、版を保存できます", lines)
+        self.assertIn(text("screen.export_needs_version"), lines)
+        self.assertIn("まだ書いていません（アプリへの書き出しに要ります）", lines)
+        self.assertIn(text("screen.course_note"), lines)
+        self.assertEqual(label_texts(logs["VIEW3D_PT_ai_tools_jobs"]), ["仕事はありません"])
+        self.assertEqual(label_texts(logs["VIEW3D_PT_ai_tools_report"]), [text("screen.report_none")])
+        for idname in ("save_version", "compare_versions", "export_and_check", "run_course"):
+            with self.subTest(idname=idname), self.assertRaisesRegex(RuntimeError, "先にファイルを保存してください"):
+                getattr(bpy.ops.ai_tools, idname)()
+        self.assertIsNone(background.queue())
+        self.assertEqual(bpy.data.filepath, "")
 
     def test_card_summary_and_parts(self):
         bpy.ops.ai_tools.register_card()
@@ -1054,6 +1073,531 @@ class PanelWithoutModelTest(UiCase):
         self.assertEqual(bpy.ops.ai_tools.check_card(), {"CANCELLED"})
         self.assertIsNone(bpy.data.texts.get(card_bpy.TEXT_NAME))
         self.assertIsNone(state.bone_check())
+
+
+# MARK: - 確かめと書き出し・裏の仕事・報告（A6・E1＋E2・A5・A10・A11）
+
+TIME = "2026-10-21T07:00:00Z"
+
+
+class DoneProcess:
+    """終わった裏の Blender の代わり（poll() はすぐに終了コードを返す）"""
+
+    pid = 4242
+
+    def __init__(self, code=0):
+        self.returncode = code
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+class PendingProcess(DoneProcess):
+    """動き続ける裏の Blender の代わり（returncode を入れると終わる）"""
+
+    def __init__(self):
+        super().__init__(None)
+        self.calls = []
+
+    def terminate(self):
+        self.calls.append("terminate")
+
+    def kill(self):
+        self.calls.append("kill")
+
+
+def fake_export_result(params):
+    """export.convert_and_check の代わり（書き出さずに、決まった結果を返す）"""
+    deviation = Measurement("roundtrip_deviation", 0.0007, "m", Signal.RED, "ずれ", {"pose": "knees"})
+    return {"convert": {"ok": True, "signal": "green", "problems": [], "warnings": [], "summary": {},
+                        "output_dir": params["output_dir"], "usdz": None, "rig_path": None, "input_unchanged": True,
+                        "timed_out": False, "returncode": 0, "record": {}},
+            "roundtrip": [deviation.to_data(),
+                          Measurement("influence_limit_effect", 0.0004, "m", Signal.YELLOW, "少し").to_data()]}
+
+
+class StageOneCase(UiCase):
+    """保存したモデルのファイルを開き、裏の係の順番待ちを、にせの裏の Blender（runner）で作るようにする。
+
+    mode="inline"：仕事を始めると、同じプロセスの中で、にせの目録の道具を jobs.worker.run_job で動かす（すぐ終わる）。
+    mode="pending"：始めても終わらない（テストが progress.json を書き、プロセスを終わらせる）。
+    """
+
+    def setUp(self):
+        super().setUp()
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.folder = Path(temp.name)
+        self.blend = self.folder / "model.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(self.blend))
+        self.digest = self.file_digest()
+        self.work = self.folder / "model_ai_tools"
+        self.repo = self.folder / "koumakan"
+        self.prefs = preferences.PreferenceValues()
+        patcher = mock.patch.object(preferences, "get_preferences", lambda context=None: self.prefs)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.mode = "inline"
+        self.calls = []
+        self.processes = []
+        patcher = mock.patch.object(launcher_bpy, "make_queue", self.make_queue)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # 後片付け（unregister）は UiCase の _restore。そのあとで、開いたファイルが変わっていないかを確かめる
+        self.addCleanup(self.assert_open_file_untouched)
+
+    def file_digest(self) -> str:
+        return hashlib.sha256(self.blend.read_bytes()).hexdigest()
+
+    def assert_open_file_untouched(self):
+        """操作は、開いている .blend の場所を変えず、そのファイルを書き換えない"""
+        self.assertEqual(self.file_digest(), self.digest, "開いている .blend が書き換えられました")
+
+    def make_queue(self, root, *, blender=None):
+        return JobQueue(root, self.runner, timeout=1000.0, grace=100.0)
+
+    def fake_catalog(self):
+        catalog = Catalog()
+
+        def course(params):
+            self.calls.append(("motion.run_course", params))
+            events = [Event("arms_up", "floor_sink", Measurement("floor_sink", 0.0, "m", Signal.GREEN, "沈まない")),
+                      Event("arms_up", "cloth_penetration",
+                            Measurement("penetration_depth", 0.003, "m", Signal.RED, "深い"))]
+            return {"events": [{"pose": e.pose, "check": e.check, "measurement": e.measurement.to_data()}
+                               for e in events], "summary": {}, "lines": []}
+
+        def export(params):
+            self.calls.append(("export.convert_and_check", params))
+            return fake_export_result(params)
+
+        catalog.register(registry.RUN_COURSE, course)
+        catalog.register(registry.CONVERT_AND_CHECK, export)
+        return catalog
+
+    def runner(self, job, job_dir):
+        if self.mode == "inline":
+            final = jobs_worker.run_job(job, self.fake_catalog(), job_dir)
+            process = DoneProcess(0 if final.status == "done" else 1)
+        else:
+            process = PendingProcess()
+            jobs_progress.write_progress(job_dir, jobs_progress.Progress(status="running", updated_at=TIME,
+                                                                         started_at=TIME, step=1, total=4,
+                                                                         message_key="export.step_convert"))
+        self.processes.append(process)
+        return WorkerProcess(process=process)
+
+    def make_koumakan(self):
+        converter = self.repo / "tools" / "model-converter"
+        converter.mkdir(parents=True)
+        for name in ("convert_blend.py", "convert_pmx.py"):
+            (converter / name).write_text("# にせの紅魔館\n", encoding="utf-8")
+        self.prefs = preferences.PreferenceValues(koumakan_repo=str(self.repo))
+
+    def jobs(self):
+        return [row.job for row in background.rows()]
+
+    def draw_checked(self, panel_class) -> list:
+        log = draw(panel_class)
+        for call in log:
+            with self.subTest(call=call.get("text")):
+                self.assertIs(call["translate"], False)
+                self.assertIn(call["icon"], ICONS)
+                if call["kind"] == "label":
+                    self.assertFalse(call["text"].startswith("思いがけないエラーです"), call["text"])
+        return log
+
+
+class VersionButtonTest(StageOneCase):
+    def test_save_version_and_list(self):
+        self.assertEqual(state.versions(), ())
+        self.assertIn("まだ版を保存していません", label_texts(self.draw_checked(panel.VIEW3D_PT_ai_tools_checks)))
+        self.assertEqual(bpy.ops.ai_tools.save_version(), {"FINISHED"})
+        self.assertEqual(bpy.ops.ai_tools.save_version(), {"FINISHED"})
+        self.assertEqual([(entry.number, entry.name) for entry in state.versions()],
+                         [(1, "model_v001.blend"), (2, "model_v002.blend")])
+        self.assertTrue((self.folder / "model_v002.blend").is_file())
+        self.assertEqual(bpy.data.filepath, str(self.blend))
+        lines = label_texts(self.draw_checked(panel.VIEW3D_PT_ai_tools_checks))
+        self.assertIn("保存した版（2 個）", lines)
+        self.assertLess(lines.index("第 2 版：model_v002.blend"), lines.index("第 1 版：model_v001.blend"))
+        self.assertIn("書き出す版：model_v002.blend", lines)
+        self.assertIsNone(background.queue())  # 軽い道具では、仕事のフォルダを作らない
+        self.assertFalse(self.work.exists())
+
+    def test_versions_list_follows_files(self):
+        """別のファイルを開くと、覚えた物を消して読み直す（保存した版の一覧と報告）"""
+        bpy.ops.ai_tools.save_version()
+        bpy.ops.ai_tools.compare_versions()
+        self.assertIsNotNone(state.report_view())
+        other = self.folder / "other.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(other), copy=True)
+        bpy.ops.wm.open_mainfile(filepath=str(other))
+        self.assertEqual(state.versions(), ())
+        self.assertIsNone(state.report_view())
+        bpy.ops.wm.open_mainfile(filepath=str(self.blend))
+        self.assertEqual([entry.name for entry in state.versions()], ["model_v001.blend"])
+
+    def test_compare_report_decisions_html_and_baseline(self):
+        bpy.ops.ai_tools.save_version()
+        self.assertEqual(bpy.ops.ai_tools.compare_versions(), {"FINISHED"})
+        view = state.report_view()
+        self.assertEqual((view.report.kind, [item.item_id for item in view.report.items]),
+                         ("versions", ["versions/unexpected_changes"]))
+        self.move_skirt_vertex()
+        bpy.ops.ai_tools.compare_versions()
+        report = state.report_view().report
+        skirt = report_sources.short_hash(mmd_model.SKIRT_NAME)
+        item_id = f"versions/vertices/{skirt}/vertices_moved"
+        self.assertEqual([(item.item_id, item.signal) for item in report.items], [(item_id, Signal.RED)])
+        self.assertTrue(report.item(item_id).titles["en"].startswith(f"{mmd_model.SKIRT_NAME}: 1 vertices moved"))
+        log = self.draw_checked(panel.VIEW3D_PT_ai_tools_report)
+        lines = label_texts(log)
+        self.assertEqual(lines[0], f"前の版との比べ（{report.created_at}）")
+        self.assertEqual(lines[1], "【赤】赤が 1 件あります（黄 0 件、測れなかった物 0 件）")
+        self.assertIn("前の版の赤の数の記録がありません（今回の 1 件を基準として記録します）", lines)
+        self.assertIn("値：1 件", lines)
+        self.assertIn("変えてよい所の外の変化です（変える前に、変えてよい所を決めてください）", lines)
+        decide = calls_of(log, "ai_tools.decide")
+        self.assertEqual([(c["text"], c["props"].item_id, c["props"].decision, c["context"]) for c in decide],
+                         [("直す（おすすめ）", item_id, "fix", "EXEC_DEFAULT"),
+                          ("このままでよい", item_id, "accept", "EXEC_DEFAULT"),
+                          ("あとで", item_id, "later", "EXEC_DEFAULT")])
+        self.assertEqual(calls_of(log, "ai_tools.clear_decision"), [])
+
+        # 答えは作業フォルダの decisions.json に記録し、報告に写す
+        self.assertEqual(bpy.ops.ai_tools.decide(item_id=item_id, decision="accept"), {"FINISHED"})
+        stored = json.loads((self.work / "decisions.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["decisions"][item_id]["decision"], "accept")
+        self.assertEqual(state.report_view().report.item(item_id).decision, "accept")
+        log = self.draw_checked(panel.VIEW3D_PT_ai_tools_report)
+        lines = label_texts(log)
+        self.assertEqual(lines[1], "【緑】大丈夫です、「このままでよい」とした物 1 件")
+        self.assertIn("答え：このままでよい", lines)
+        self.assertEqual([c["props"].item_id for c in calls_of(log, "ai_tools.clear_decision")], [item_id])
+        # 比べ直しても、答えはそのまま（id が同じ）
+        bpy.ops.ai_tools.compare_versions()
+        self.assertEqual(state.report_view().report.item(item_id).decision, "accept")
+        self.assertEqual(bpy.ops.ai_tools.clear_decision(item_id=item_id), {"FINISHED"})
+        self.assertEqual(json.loads((self.work / "decisions.json").read_text(encoding="utf-8"))["decisions"], {})
+        self.assertIsNone(state.report_view().report.item(item_id).decision)
+
+        # 赤の数の基準
+        self.assertEqual(bpy.ops.ai_tools.record_baseline(), {"FINISHED"})
+        stored = json.loads((self.work / "decisions.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["baselines"]["versions"]["red"], 1)
+        self.assertIn("赤は 1 件（前の版は 1 件）", label_texts(self.draw_checked(panel.VIEW3D_PT_ai_tools_report)))
+
+        # HTML：作業フォルダの reports/<報告の id>.html。開くのは差しかえた関数で確かめる
+        self.assertEqual(bpy.ops.ai_tools.write_report_html(), {"FINISHED"})
+        html_path = self.work / "reports" / f"{state.report_view().report.report_id}.html"
+        self.assertTrue(html_path.is_file())
+        self.assertIn("点検の報告", html_path.read_text(encoding="utf-8"))
+        with mock.patch.object(operators, "open_path") as opened:
+            self.assertEqual(bpy.ops.ai_tools.open_report_html(), {"FINISHED"})
+        opened.assert_called_once_with(html_path)
+        self.assertIn(f"HTML：{html_path}", label_texts(self.draw_checked(panel.VIEW3D_PT_ai_tools_report)))
+
+        # まちがった答え・無い項目は断る
+        with self.assertRaisesRegex(RuntimeError, "報告に、その項目がありません"):
+            bpy.ops.ai_tools.decide(item_id="versions/nope", decision="fix")
+        with self.assertRaises(TypeError):
+            bpy.ops.ai_tools.decide(item_id=item_id, decision="ignore")
+        self.assertEqual(bpy.data.filepath, str(self.blend))
+
+    def test_unreadable_decisions_are_shown_and_not_overwritten(self):
+        bpy.ops.ai_tools.save_version()
+        self.move_skirt_vertex()
+        self.work.mkdir()
+        (self.work / "decisions.json").write_text("{broken", encoding="utf-8")
+        bpy.ops.ai_tools.compare_versions()
+        lines = label_texts(self.draw_checked(panel.VIEW3D_PT_ai_tools_report))
+        self.assertTrue(any(line.startswith("答えの記録（decisions.json）が読めません：") for line in lines), lines)
+        item_id = state.report_view().report.items[0].item_id
+        with self.assertRaisesRegex(RuntimeError, "答えを記録できませんでした"):
+            bpy.ops.ai_tools.decide(item_id=item_id, decision="fix")
+        self.assertEqual((self.work / "decisions.json").read_text(encoding="utf-8"), "{broken")
+
+    def test_report_buttons_need_a_report(self):
+        for idname in ("decide", "clear_decision", "write_report_html", "open_report_html", "record_baseline"):
+            with self.subTest(idname=idname), self.assertRaisesRegex(RuntimeError, "報告がありません"):
+                kwargs = {"item_id": "x"} if idname in ("decide", "clear_decision") else {}
+                getattr(bpy.ops.ai_tools, idname)(**kwargs)
+        self.assertFalse(self.work.exists())
+
+
+class ExportButtonTest(StageOneCase):
+    def test_refused_without_koumakan_or_version(self):
+        with self.assertRaisesRegex(RuntimeError, "紅魔館の場所を、拡張機能の設定に書いてください"):
+            bpy.ops.ai_tools.export_and_check()
+        self.prefs = preferences.PreferenceValues(koumakan_repo=str(self.folder / "nowhere"))
+        with self.assertRaisesRegex(RuntimeError, "紅魔館の場所が正しくありません"):
+            bpy.ops.ai_tools.export_and_check()
+        self.make_koumakan()
+        with self.assertRaisesRegex(RuntimeError, "書き出す版がありません。先に「版を保存」を押してください"):
+            bpy.ops.ai_tools.export_and_check()
+        self.assertIsNone(background.queue())
+        self.assertFalse(self.work.exists(), "断ったときは、作業フォルダを作らない")
+
+    def test_refuses_app_model_folder_as_work_folder(self):
+        """作業フォルダがアプリの Model フォルダの中でも、そこには書き出さない"""
+        self.make_koumakan()
+        bpy.ops.ai_tools.save_version()
+        app_model = self.repo / "KoumakanApp" / "KoumakanApp" / "Model"
+        self.prefs = preferences.PreferenceValues(koumakan_repo=str(self.repo), work_dir=str(app_model))
+        with self.assertRaisesRegex(RuntimeError, "アプリの Model フォルダ"):
+            bpy.ops.ai_tools.export_and_check()
+        self.assertFalse((app_model / "exports").exists())
+        self.assertEqual(self.calls, [])
+
+    def test_exports_the_newest_version_in_the_background(self):
+        self.make_koumakan()
+        bpy.ops.ai_tools.save_version()
+        bpy.ops.ai_tools.save_version()
+        self.assertEqual(bpy.ops.ai_tools.export_and_check(), {"FINISHED"})
+        queue = background.queue()
+        self.assertEqual(queue.root, self.work / "jobs")
+        [job] = self.jobs()
+        newest = str(self.folder / "model_v002.blend")
+        output = self.work / "exports" / f"model_v002_{job.job_id}"
+        self.assertEqual(job.tool_id, "export.convert_and_check")
+        self.assertEqual(job.input_blend, newest)
+        self.assertEqual(job.params, {"input_blend": newest, "output_dir": str(output),
+                                      "koumakan_repo": str(self.repo), "blender": ""})
+        self.assertFalse(output.exists())
+        self.assertEqual(self.calls, [])  # まだ始めていない（タイマーが始める）
+        log = self.draw_checked(panel.VIEW3D_PT_ai_tools_jobs)
+        self.assertIn("書き出して確かめる：順番待ち", label_texts(log))
+        self.assertEqual([c["props"].job_id for c in calls_of(log, "ai_tools.cancel_job")], [job.job_id])
+
+        background.step()  # 始めて（同じプロセスの中で）終わる。プロセスはまだ片付いていない
+        self.assertEqual(self.calls, [("export.convert_and_check", job.params)])
+        [row] = background.rows()
+        self.assertTrue(row.cleaning)
+        log = self.draw_checked(panel.VIEW3D_PT_ai_tools_jobs)
+        self.assertIn("書き出して確かめる：片付け中", label_texts(log))
+        self.assertEqual([c for c in log if c["kind"] == "operator"], [])
+        # 終わった仕事の結果は、報告に出る
+        report = state.report_view().report
+        self.assertEqual(report.kind, "export")
+        self.assertEqual(report.source["version"], "model_v002.blend")
+        self.assertEqual(report.source["job_id"], job.job_id)
+        self.assertIn("export/roundtrip_deviation/knees", [item.item_id for item in report.items])
+        lines = label_texts(self.draw_checked(panel.VIEW3D_PT_ai_tools_report))
+        self.assertIn("【赤】読み戻した形のずれ：ひざを曲げる", lines)
+        self.assertIn("値：0.70 mm", lines)
+
+        background.step()
+        [row] = background.rows()
+        self.assertFalse(row.cleaning)
+        log = self.draw_checked(panel.VIEW3D_PT_ai_tools_jobs)
+        self.assertIn("書き出して確かめる：終わりました", label_texts(log))
+        self.assertEqual([c["idname"] for c in log if c["kind"] == "operator"],
+                         ["ai_tools.show_job_result", "ai_tools.remove_job"])
+        # ほかの報告を出したあとでも、結果を見直せる
+        state.show_report(None)
+        self.assertEqual(bpy.ops.ai_tools.show_job_result(job_id=job.job_id), {"FINISHED"})
+        self.assertEqual(state.report_view().report.kind, "export")
+        self.assertEqual(bpy.ops.ai_tools.remove_job(job_id=job.job_id), {"FINISHED"})
+        self.assertEqual(background.rows(), ())
+        self.assertFalse(queue.job_dir(job.job_id).exists())
+        with self.assertRaisesRegex(RuntimeError, "その仕事はありません"):
+            bpy.ops.ai_tools.show_job_result(job_id=job.job_id)
+        self.assertEqual(bpy.data.filepath, str(self.blend))
+
+    def test_bad_params_are_refused_before_enqueue(self):
+        self.make_koumakan()
+        bpy.ops.ai_tools.save_version()
+        with mock.patch.object(Catalog, "validate_call", return_value=["値が合いません"]):
+            with self.assertRaisesRegex(RuntimeError, "書き出しを始められませんでした：値が合いません"):
+                bpy.ops.ai_tools.export_and_check()
+        self.assertEqual(self.jobs(), [])
+
+
+class CourseButtonTest(StageOneCase):
+    def test_course_runs_on_a_copy_in_the_job_folder(self):
+        self.assertEqual(bpy.ops.ai_tools.run_course(), {"FINISHED"})
+        [job] = self.jobs()
+        copy = background.queue().job_dir(job.job_id) / "input.blend"
+        self.assertEqual((job.tool_id, job.params, job.input_blend), ("motion.run_course", {"visibility": True}, str(copy)))
+        self.assertTrue(copy.is_file())
+        self.assertEqual(bpy.data.filepath, str(self.blend))  # 写しを保存しても、開いているファイルは変わらない
+        background.step()
+        background.step()
+        self.assertEqual(self.calls, [("motion.run_course", {"visibility": True})])
+        self.assertEqual([row.progress.status for row in background.rows()], ["done"])
+        report = state.report_view().report
+        self.assertEqual((report.kind, [item.item_id for item in report.items]),
+                         ("pose_course", ["pose_course/arms_up/floor_sink", "pose_course/arms_up/cloth_penetration"]))
+        self.assertNotIn("version", report.source)  # 写しは版ではない
+        self.assertIn("確かめの動き：終わりました", label_texts(self.draw_checked(panel.VIEW3D_PT_ai_tools_jobs)))
+
+    def test_copy_failure_withdraws_the_job(self):
+        with mock.patch.object(operators, "save_copy", side_effect=RuntimeError("ディスクがいっぱい")):
+            with self.assertRaisesRegex(RuntimeError, "写しを保存できなかったので、仕事を取り消しました"):
+                bpy.ops.ai_tools.run_course()
+        self.assertEqual(self.jobs(), [])
+        self.assertEqual([path.name for path in (self.work / "jobs").iterdir()], [])
+        background.step()
+        self.assertEqual(self.calls, [])
+
+    def test_cancel_running_job_and_errors(self):
+        self.mode = "pending"
+        bpy.ops.ai_tools.run_course()
+        [job] = self.jobs()
+        background.step()
+        [process] = self.processes
+        log = self.draw_checked(panel.VIEW3D_PT_ai_tools_jobs)
+        lines = label_texts(log)
+        self.assertIn("確かめの動き：動いています", lines)
+        self.assertIn("1 / 4：convert_blend.py で書き出しています", lines)
+        self.assertEqual([c["props"].job_id for c in calls_of(log, "ai_tools.cancel_job")], [job.job_id])
+        self.assertEqual(bpy.ops.ai_tools.cancel_job(job_id=job.job_id), {"FINISHED"})
+        folder = background.queue().job_dir(job.job_id)
+        self.assertTrue((folder / jobs_progress.CANCEL_FILE).is_file())
+        # 裏の係が「中止しました」を書いたが、プロセスはまだ残っている：片付け中（ボタンは出さない）
+        jobs_progress.write_progress(folder, jobs_progress.Progress(
+            status="cancelled", updated_at=TIME, finished_at=TIME, error_key="jobs.error_cancelled"))
+        background.step()
+        log = self.draw_checked(panel.VIEW3D_PT_ai_tools_jobs)
+        self.assertIn("確かめの動き：片付け中", label_texts(log))
+        self.assertEqual([c for c in log if c["kind"] == "operator"], [])
+        with self.assertRaisesRegex(RuntimeError, "仕事を扱えませんでした"):
+            bpy.ops.ai_tools.remove_job(job_id=job.job_id)
+        process.returncode = 0
+        background.step()
+        log = self.draw_checked(panel.VIEW3D_PT_ai_tools_jobs)
+        lines = label_texts(log)
+        self.assertIn("確かめの動き：中止しました", lines)
+        self.assertIn("中止の頼みを受けて止めました", lines)
+        self.assertEqual([c["idname"] for c in log if c["kind"] == "operator"], ["ai_tools.remove_job"])
+        self.assertIsNone(state.report_view())  # 中止した仕事は報告にしない
+
+        # 失敗した仕事：決まった理由（値を入れた文）と、自由な文
+        bpy.ops.ai_tools.run_course()
+        bpy.ops.ai_tools.run_course()
+        first, second = [row.job for row in background.rows()][1:]
+        background.step()
+        folder = background.queue().job_dir(first.job_id)
+        jobs_progress.write_progress(folder, jobs_progress.Progress(
+            status="failed", updated_at=TIME, finished_at=TIME, error_key="jobs.error_input_changed",
+            error_values={"path": "/x/input.blend"}))
+        self.processes[-1].returncode = 1
+        background.step()  # 1つ目を片付け、2つ目を始める
+        jobs_progress.write_progress(background.queue().job_dir(second.job_id), jobs_progress.Progress(
+            status="failed", updated_at=TIME, finished_at=TIME, error="ValueError: こわれた"))
+        self.processes[-1].returncode = 1
+        background.step()
+        lines = label_texts(self.draw_checked(panel.VIEW3D_PT_ai_tools_jobs))
+        self.assertIn("入力のファイルが途中で変わりました。結果は使えません（/x/input.blend）", lines)
+        self.assertIn("ValueError: こわれた", lines)
+        self.assertEqual(lines.count("確かめの動き：失敗しました"), 2)
+        # 新しい仕事が上
+        titles = [line for line in lines if line.startswith("確かめの動き：")]
+        self.assertEqual(titles, ["確かめの動き：失敗しました", "確かめの動き：失敗しました", "確かめの動き：中止しました"])
+
+    def test_refused_without_a_model(self):
+        for obj in list(bpy.data.objects):
+            bpy.data.objects.remove(obj)
+        with self.assertRaisesRegex(RuntimeError, "確かめの動きを始められませんでした：アーマチュアがありません"):
+            bpy.ops.ai_tools.run_course()
+        self.assertIsNone(background.queue())
+        self.assertFalse(self.work.exists())
+
+    def test_queued_job_can_be_cancelled_and_removed(self):
+        bpy.ops.ai_tools.run_course()
+        [job] = self.jobs()
+        self.assertEqual(bpy.ops.ai_tools.cancel_job(job_id=job.job_id), {"FINISHED"})
+        self.assertEqual([row.progress.status for row in background.rows()], ["cancelled"])
+        background.step()
+        self.assertEqual(self.calls, [])  # 中止した仕事は始めない
+        self.assertEqual(bpy.ops.ai_tools.remove_job(job_id=job.job_id), {"FINISHED"})
+        self.assertEqual(background.rows(), ())
+        with self.assertRaisesRegex(RuntimeError, "その仕事はありません"):
+            bpy.ops.ai_tools.cancel_job(job_id=job.job_id)
+        with self.assertRaisesRegex(RuntimeError, "仕事を扱えませんでした"):
+            bpy.ops.ai_tools.cancel_job(job_id="../outside")
+
+    def test_many_jobs_are_cut(self):
+        for _ in range(panel.MAX_JOB_ROWS + 2):
+            bpy.ops.ai_tools.run_course()
+        lines = label_texts(self.draw_checked(panel.VIEW3D_PT_ai_tools_jobs))
+        self.assertEqual(sum(line.startswith("確かめの動き：") for line in lines), panel.MAX_JOB_ROWS)
+        self.assertIn("ほか 2 件（古い仕事）", lines)
+
+
+class BackgroundQueueTest(StageOneCase):
+    def test_queue_is_made_only_when_the_jobs_folder_exists(self):
+        """register・ファイルを開いたときは、仕事のフォルダがあるときだけ順番待ちを作る（フォルダを勝手に作らない）"""
+        blender_ai_tools.unregister()
+        blender_ai_tools.register()
+        self.assertIsNone(background.queue())
+        self.assertFalse(self.work.exists())
+        (self.work / "jobs").mkdir(parents=True)
+        stops = []
+        real_start = launcher_bpy.start_polling
+
+        def recording_start(queue, **kwargs):
+            stop = real_start(queue, **kwargs)
+
+            def recorded_stop():
+                stops.append(queue.root)
+                stop()
+
+            return recorded_stop
+
+        with mock.patch.object(launcher_bpy, "start_polling", recording_start):
+            blender_ai_tools.register()
+            first = background.queue()
+            self.assertEqual(first.root, self.work / "jobs")
+            blender_ai_tools.register()  # 登録し直しても、1つだけ（前のタイマーは止める）
+            self.assertEqual(stops, [self.work / "jobs"])
+            self.assertIsNot(background.queue(), first)
+            blender_ai_tools.unregister()
+            self.assertEqual(stops, [self.work / "jobs"] * 2)
+            self.assertIsNone(background.queue())
+        blender_ai_tools.register()
+
+    def test_reopening_recovers_orphaned_jobs(self):
+        """前の回の裏の Blender が消えていたら、開き直したときに失敗（結果なし）にする"""
+        self.mode = "pending"
+        bpy.ops.ai_tools.run_course()
+        [job] = self.jobs()
+        background.step()
+        other = self.folder / "other.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(other), copy=True)
+        bpy.ops.wm.open_mainfile(filepath=str(other))
+        self.assertIsNone(background.queue())  # other_ai_tools/jobs は無い
+        self.assertEqual(background.rows(), ())
+        bpy.ops.wm.open_mainfile(filepath=str(self.blend))
+        self.assertEqual(background.queue().root, self.work / "jobs")
+        [row] = background.rows()
+        self.assertEqual((row.job.job_id, row.progress.status, row.progress.error_key),
+                         (job.job_id, "failed", "jobs.error_orphaned"))
+
+    def test_load_post_stops_the_old_timer(self):
+        bpy.ops.ai_tools.run_course()
+        stopped = []
+        with mock.patch.object(background, "_stop", lambda: stopped.append(True)):
+            background.on_load_post()
+        self.assertEqual(stopped, [True])
+        self.assertEqual(background.queue().root, self.work / "jobs")  # 同じファイルなので、つなぎ直す
+
+    def test_draw_does_not_change_state(self):
+        bpy.ops.ai_tools.run_course()
+        before = (background.rows(), state.report_view(), state.versions())
+        listing = sorted(path.name for path in self.work.rglob("*"))
+        for panel_class in panel.CLASSES:
+            self.draw_checked(panel_class)
+        self.assertEqual((background.rows(), state.report_view(), state.versions()), before)
+        self.assertEqual(sorted(path.name for path in self.work.rglob("*")), listing)
+        self.assertEqual(self.calls, [])
 
 
 # MARK: - 小さな道具

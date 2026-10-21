@@ -13,7 +13,9 @@ import numpy as np
 from blender_ai_tools import provenance
 from blender_ai_tools.catalog import InvalidParamsError
 from blender_ai_tools.jobs import launcher_bpy, worker
-from blender_ai_tools.registry import build_catalog
+from blender_ai_tools.motion.course import CHECKS
+from blender_ai_tools.registry import POSE_NAMES, build_catalog
+from blender_ai_tools.report.sources import report_from_tool_result
 from tests.fixtures import mmd_model
 
 KOUMAKAN = os.environ.get("BLENDER_AI_TOOLS_KOUMAKAN_REPO", "")
@@ -93,6 +95,51 @@ class VersionToolsTest(unittest.TestCase):
             self.catalog.call("versions.save", {})
         with self.assertRaises(ValueError):
             self.catalog.call("versions.list", {})
+
+
+class CourseToolThroughWorkerTest(unittest.TestCase):
+    """確かめの動き（motion.run_course）を、本物の裏の Blender で動かす（ポーズ 2 つ、見え方なし）"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.temp.name)
+        self.blend = open_fresh_model(self.folder)
+
+    def tearDown(self):
+        bpy.ops.wm.read_homefile(use_empty=True)
+        self.temp.cleanup()
+
+    def test_run_course_in_background_blender(self):
+        poses = list(POSE_NAMES[:2])
+        params = {"poses": poses, "visibility": False}
+        self.assertEqual(build_catalog().validate_call("motion.run_course", params), [])
+        digest = provenance.file_digest(self.blend).sha256
+        queue = launcher_bpy.make_queue(self.folder / "jobs")
+        job = launcher_bpy.make_job("motion.run_course", params, input_blend=self.blend)
+        queue.enqueue(job)
+        self.assertEqual(queue.start_next().job_id, job.job_id)
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline:
+            final = queue.poll()
+            if queue.running_job is None:
+                break
+            time.sleep(0.5)
+        else:
+            self.fail("裏の Blender が時間内に終わりませんでした")
+        self.assertEqual((final.status, final.error, final.error_key), ("done", None, None), queue.log_text(job.job_id))
+        self.assertEqual(final.total, len(poses))  # ポーズごとに進み具合を書く
+        data = worker.read_result(queue.job_dir(job.job_id))
+        self.assertEqual(data["tool_id"], "motion.run_course")
+        events = data["result"]["events"]
+        self.assertEqual([e["pose"] for e in events if e["check"] != "app_motion"],
+                         [pose for pose in poses for _ in CHECKS])
+        self.assertEqual([e["check"] for e in events if e["check"] == "app_motion"], ["app_motion"])
+        self.assertEqual(provenance.file_digest(self.blend).sha256, digest)  # 入力は変わらない
+        # 結果から報告を作れる（画面の「結果を見る」と同じ）
+        report = report_from_tool_result("motion.run_course", data["result"], source={"job_id": job.job_id})
+        self.assertEqual(report.kind, "pose_course")
+        self.assertEqual(len(report.items), len(events))
+        self.assertEqual(report.items[0].item_id, f"pose_course/{poses[0]}/{CHECKS[0]}")
 
 
 @unittest.skipUnless(KOUMAKAN, "環境変数 BLENDER_AI_TOOLS_KOUMAKAN_REPO（紅魔館のリポジトリの場所）がありません")

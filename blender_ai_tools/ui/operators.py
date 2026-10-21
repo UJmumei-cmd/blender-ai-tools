@@ -1,8 +1,12 @@
 """パネルのボタンが動かす操作（オペレーター）。どれも bl_idname は "ai_tools.*"。
 
-- モデルの形は変えない。.blend のファイルは保存しない（保存するのはユーザー。CLAUDE.md 2章4）。
+- モデルの形は変えない。開いている .blend のファイルは保存しない（保存するのはユーザー。CLAUDE.md 2章4）。
   変えるのは、.blend の中の登録カードのテキスト（ai_tools_card.json）だけ。
-- 骨の名前を調べるときは、道具の目録（A8）の bones.map_names を目録から呼ぶ（CLAUDE.md 2章1）。
+  新しく作るファイルは、版（_v001 など。versions.save）・写し（確かめの動きの入力。仕事のフォルダの中）・
+  作業フォルダの中の物（仕事・書き出し exports/・報告 reports/・答えの記録 decisions.json）だけ。
+- 道具は、目録（A8）から呼ぶ（CLAUDE.md 2章1）。骨の名前は bones.map_names、版は versions.*。
+  重い道具（export.convert_and_check・motion.run_course）は、直接呼ばずに裏の係（A10）に仕事として出す。
+- アプリの Model フォルダには書かない。書き出しは、いちばん新しい保存した版を、作業フォルダの exports/ の新しいフォルダへ。
 - まちがいは self.report({"ERROR"}, 文) で知らせ、画面に例外を出さない。文は texts の screen.*（いまの言語）。
   道具（card.py など）の日本語の説明は、その文の中に入れて見せる。
 - 名前と説明（ツールチップ）は、いまの言語で作る（localize。言語を変えたら作り直す）。
@@ -12,18 +16,26 @@
 
 import traceback
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import bpy
 
 from .. import registry
 from ..catalog import CatalogError
+from ..export.convert import check_output_dir, koumakan_paths
+from ..jobs import launcher_bpy
+from ..jobs.spec import JOB_FILE, new_job_id
 from ..model import card_bpy, extract_bpy
 from ..model.card import (
     CLOTH_TYPE_IDS, EXTRA_ANSWER, PART_KINDS, ModelCard, set_bone_answer, set_material_kind, set_part_kind,
 )
-from ..texts import text
-from . import labels, state
+from ..report import html as report_html
+from ..report import sources as report_sources
+from ..report.decisions import DecisionStore
+from ..report.model import DECISIONS, decision_label, headline
+from ..texts import current_language, text
+from . import background, labels, preferences, state
 from .preferences import TRANSLATION_CONTEXT
 
 # 骨の名前の対応を調べる、目録の道具の id
@@ -381,42 +393,431 @@ class AI_TOOLS_OT_clear_bone_answer(_Localized, bpy.types.Operator):
         return {"FINISHED"}
 
 
-# MARK: - 次の段階（A10 から）
+# MARK: - 確かめと書き出し（A6 版・E1＋E2 書き出し・A5 確かめの動き）
 
-# 次の段階のボタン：(名前, 文のキー, 説明のキー, アイコン)。裏で動かす係（A10）ができるまで押せない
-NEXT_FEATURES = (
-    ("export", "screen.next_export", "screen.next_export_tip", "EXPORT"),
-    ("motion_check", "screen.next_motion_check", "screen.next_motion_check_tip", "ARMATURE_DATA"),
-    ("versions", "screen.next_versions", "screen.next_versions_tip", "FILE_TICK"),
-)
-_NEXT_TIPS = {name: tip for name, _, tip, _ in NEXT_FEATURES}
+# 目録の道具の id（どれも目録 A8 から呼ぶ。重い道具は、裏の係 A10 に仕事として出す）
+SAVE_VERSION_TOOL = "versions.save"
+COMPARE_TOOL = "versions.compare_with_previous"
+LIST_VERSIONS_TOOL = "versions.list"
+EXPORT_TOOL = "export.convert_and_check"
+COURSE_TOOL = "motion.run_course"
+# 「確かめの動き」のボタンの値：アプリのカメラ（まわり全体）から見える物だけを数える（段階1の基準。裏で動かすので重くてよい）
+COURSE_PARAMS = {"visibility": True}
+# 作業フォルダの中の置き場所
+EXPORTS_DIR = "exports"
+REPORTS_DIR = "reports"
+# 「確かめの動き」の入力（いまの形の写し）を、仕事のフォルダに置くときの名前
+COURSE_INPUT_NAME = "input.blend"
 
 
-class AI_TOOLS_OT_coming_soon(_Localized, bpy.types.Operator):
-    """まだ使えない道具のボタン（見えるが押せない。poll がいつも False）"""
+def require_saved() -> None:
+    """ファイルを保存していなければ Refused（版・仕事・記録は、ファイルの横の作業フォルダに置くため）"""
+    if not bpy.data.filepath:
+        raise Refused(text("screen.needs_saved_file"))
 
-    bl_idname = "ai_tools.coming_soon"
+
+def work_dir() -> Path:
+    """いまのファイルの作業フォルダ（保存していなければ Refused）"""
+    require_saved()
+    folder = preferences.work_dir_path(preferences.get_preferences())
+    if folder is None:
+        raise Refused(text("screen.needs_saved_file"))
+    return folder
+
+
+def koumakan_repo() -> Path:
+    """設定の紅魔館の場所。書いていない・convert_blend.py が無いときは Refused"""
+    repo = preferences.koumakan_repo_path(preferences.get_preferences())
+    if repo is None:
+        raise Refused(text("screen.export_needs_koumakan"))
+    try:
+        koumakan_paths(repo)
+    except ValueError as error:
+        raise Refused(text("screen.export_koumakan_invalid", error=str(error))) from error
+    return repo
+
+
+def newest_version(catalog: Any) -> dict[str, Any]:
+    """いちばん新しい保存した版（目録の versions.list）。版が無ければ Refused"""
+    listed = catalog.call(LIST_VERSIONS_TOOL, {})["versions"]
+    if not listed:
+        raise Refused(text("screen.export_needs_version"))
+    return max(listed, key=lambda entry: entry["number"])
+
+
+def checked_params(catalog: Any, tool_id: str, params: dict[str, Any]) -> dict[str, Any]:
+    """値を、道具のスキーマで先に確かめる（合わなければ ValueError。仕事を出す前に断る）"""
+    errors = catalog.validate_call(tool_id, params)
+    if errors:
+        raise ValueError("；".join(errors))
+    return params
+
+
+def save_copy(path: Path) -> None:
+    """いまの中身の写しを path に保存する（開いているファイルの場所と中身は変えない）"""
+    result = bpy.ops.wm.save_as_mainfile(filepath=str(path), copy=True, check_existing=False)
+    if "FINISHED" not in result or not path.is_file():
+        raise RuntimeError(f"写しを保存できませんでした：{path}")
+
+
+class AI_TOOLS_OT_save_version(_Localized, bpy.types.Operator):
+    """いまの中身を、新しい版（_v001 など）として保存する（目録の versions.save。開いているファイルは上書きしない）"""
+
+    bl_idname = "ai_tools.save_version"
     bl_label = ""
-    bl_options = {"INTERNAL"}
-    LABEL_KEY = "screen.op_coming_soon"
-    TIP_KEY = "screen.coming_soon"
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_save_version"
+    TIP_KEY = "screen.save_version_tip"
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.save_version_failed", self._save)
+
+    def _save(self) -> set[str]:
+        require_saved()
+        result = registry.build_catalog().call(SAVE_VERSION_TOOL, {})
+        state.refresh_versions()
+        self.report({"INFO"}, text("versions.saved", name=result["name"]))
+        return {"FINISHED"}
+
+
+class AI_TOOLS_OT_compare_versions(_Localized, bpy.types.Operator):
+    """いまの中身を、前の版と比べて報告にする（目録の versions.compare_with_previous。何も変えない）"""
+
+    bl_idname = "ai_tools.compare_versions"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_compare_versions"
+    TIP_KEY = "screen.compare_versions_tip"
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.compare_failed", self._compare)
+
+    def _compare(self) -> set[str]:
+        require_saved()
+        result = registry.build_catalog().call(COMPARE_TOOL, {})
+        report = report_sources.report_from_tool_result(COMPARE_TOOL, result)
+        state.show_report(report)
+        self.report({"INFO"}, text("screen.report_shown", headline=headline(report.items)))
+        return {"FINISHED"}
+
+
+class AI_TOOLS_OT_export_and_check(_Localized, bpy.types.Operator):
+    """いちばん新しい保存した版を、裏の Blender で書き出して確かめる（E1＋E2。作業フォルダの exports/ に書く）"""
+
+    bl_idname = "ai_tools.export_and_check"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_export_and_check"
+    TIP_KEY = "screen.export_and_check_tip"
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.export_failed", self._enqueue)
+
+    def _enqueue(self) -> set[str]:
+        folder = work_dir()
+        repo = koumakan_repo()
+        catalog = registry.build_catalog()
+        version = newest_version(catalog)
+        queue = background.ensure_queue()
+        job_id = new_job_id()
+        # 新しいフォルダに書く（E1 は空でないフォルダを断る。Mac の .DS_Store とまちがえないように、毎回作り直す）
+        output = folder / EXPORTS_DIR / f"{Path(version['path']).stem}_{job_id}"
+        if output.exists():
+            raise Refused(text("screen.export_output_exists", path=str(output)))
+        check_output_dir(output, repo)  # アプリの Model フォルダ・convert_blend.py のフォルダには書かない
+        params = checked_params(catalog, EXPORT_TOOL, {"input_blend": version["path"], "output_dir": str(output),
+                                                       "koumakan_repo": str(repo), "blender": ""})
+        queue.enqueue(launcher_bpy.make_job(EXPORT_TOOL, params, input_blend=version["path"], job_id=job_id))
+        background.refresh()
+        self.report({"INFO"}, text("screen.job_queued", tool=labels.tool_label(EXPORT_TOOL)))
+        return {"FINISHED"}
+
+
+class AI_TOOLS_OT_run_course(_Localized, bpy.types.Operator):
+    """いまの形の写しを、裏の Blender で確かめの動き（A5）にかける（写しは仕事のフォルダに置く）"""
+
+    bl_idname = "ai_tools.run_course"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_run_course"
+    TIP_KEY = "screen.run_course_tip"
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.course_failed", self._enqueue)
+
+    def _enqueue(self) -> set[str]:
+        work_dir()
+        extract_bpy.find_model()  # モデルが無ければ、仕事を出す前に断る（ValueError の日本語の説明）
+        params = checked_params(registry.build_catalog(), COURSE_TOOL, dict(COURSE_PARAMS))
+        queue = background.ensure_queue()
+        job_id = new_job_id()
+        copy_path = queue.job_dir(job_id) / COURSE_INPUT_NAME
+        queue.enqueue(launcher_bpy.make_job(COURSE_TOOL, params, input_blend=copy_path, job_id=job_id))
+        # 入れたすぐあと（タイマーが仕事を始める前）に、いまの形の写しを置く。置けなければ仕事を取り消す
+        try:
+            save_copy(copy_path)
+        except Exception as error:  # noqa: BLE001  写しが置けないときは、どんな理由でも仕事を残さない
+            queue.cancel(job_id)
+            queue.remove(job_id)
+            background.refresh()
+            raise Refused(text("screen.course_copy_failed", error=f"{type(error).__name__}: {error}")) from error
+        background.refresh()
+        self.report({"INFO"}, text("screen.job_queued", tool=labels.tool_label(COURSE_TOOL)))
+        return {"FINISHED"}
+
+
+# MARK: - 裏の仕事（A10）
+
+
+def _job_property() -> Any:
+    return bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+
+
+def current_queue(job_id: str) -> Any:
+    """仕事 job_id がある順番待ち。無ければ Refused"""
+    queue = background.queue()
+    if queue is None or not any(row.job.job_id == job_id for row in background.rows()):
+        background.refresh()
+        queue = background.queue()
+    if queue is None or not (queue.job_dir(job_id) / JOB_FILE).is_file():
+        raise Refused(text("screen.job_missing", job_id=job_id))
+    return queue
+
+
+class AI_TOOLS_OT_cancel_job(_Localized, bpy.types.Operator):
+    """仕事を中止する（順番待ちならすぐ。動いていれば、裏の Blender に中止を頼む）"""
+
+    bl_idname = "ai_tools.cancel_job"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_cancel_job"
+    TIP_KEY = "screen.cancel_job_tip"
 
     @classmethod
     def properties(cls) -> dict[str, Any]:
-        return {"feature": _name_property()}
-
-    @classmethod
-    def poll(cls, context: Any) -> bool:
-        return False
-
-    @classmethod
-    def description(cls, context: Any, properties: Any) -> str:
-        tip = _NEXT_TIPS.get(properties.feature) if properties is not None else None
-        return text(tip) if tip is not None else text(cls.TIP_KEY)
+        return {"job_id": _job_property()}
 
     def execute(self, context: Any) -> set[str]:
-        self.report({"WARNING"}, text("screen.coming_soon"))
-        return {"CANCELLED"}
+        return run_guarded(self, "screen.job_failed", self._cancel)
+
+    def _cancel(self) -> set[str]:
+        current_queue(self.job_id).cancel(self.job_id)
+        background.refresh()
+        self.report({"INFO"}, text("screen.job_cancel_requested", job_id=self.job_id))
+        return {"FINISHED"}
+
+
+class AI_TOOLS_OT_remove_job(_Localized, bpy.types.Operator):
+    """終わった仕事を一覧から消す（仕事のフォルダを消す。書き出したファイルは exports/ に残る）"""
+
+    bl_idname = "ai_tools.remove_job"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_remove_job"
+    TIP_KEY = "screen.remove_job_tip"
+
+    @classmethod
+    def properties(cls) -> dict[str, Any]:
+        return {"job_id": _job_property()}
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.job_failed", self._remove)
+
+    def _remove(self) -> set[str]:
+        current_queue(self.job_id).remove(self.job_id)
+        background.refresh()
+        self.report({"INFO"}, text("screen.job_removed", job_id=self.job_id))
+        return {"FINISHED"}
+
+
+class AI_TOOLS_OT_show_job_result(_Localized, bpy.types.Operator):
+    """終わった仕事の結果を、報告に出す"""
+
+    bl_idname = "ai_tools.show_job_result"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_show_job_result"
+    TIP_KEY = "screen.show_job_result_tip"
+
+    @classmethod
+    def properties(cls) -> dict[str, Any]:
+        return {"job_id": _job_property()}
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.job_failed", self._show)
+
+    def _show(self) -> set[str]:
+        current_queue(self.job_id)
+        report = background.load_report(self.job_id)
+        state.show_report(report)
+        self.report({"INFO"}, text("screen.report_shown", headline=headline(report.items)))
+        return {"FINISHED"}
+
+
+# MARK: - 報告（A11）
+
+
+def current_report() -> Any:
+    """いまの報告（答えを写した物）。無ければ Refused"""
+    view = state.report_view()
+    if view is None:
+        raise Refused(text("screen.no_report"))
+    return view.report
+
+
+def decision_store() -> DecisionStore:
+    """答えの記録（作業フォルダの decisions.json）。保存していないときは Refused、読めないときは ValueError"""
+    work_dir()
+    store = state.load_store()
+    if store is None:
+        raise Refused(text("screen.needs_saved_file"))
+    return store
+
+
+def report_version(report: Any) -> str | None:
+    """報告のもとの版の名前（書き出しのときだけ分かる）"""
+    version = report.source.get("version")
+    return version if isinstance(version, str) else None
+
+
+def _item_title(report: Any, item_id: str) -> str:
+    try:
+        item = report.item(item_id)
+    except KeyError:
+        raise Refused(text("screen.item_missing", item=item_id)) from None
+    return item.titles.get(current_language()) or item.titles["ja"]
+
+
+class AI_TOOLS_OT_decide(_Localized, bpy.types.Operator):
+    """報告の1件に、直す・このままでよい・あとで を答える（作業フォルダの decisions.json に記録する）"""
+
+    bl_idname = "ai_tools.decide"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_decide"
+    TIP_KEY = "screen.decide_tip"
+
+    @classmethod
+    def properties(cls) -> dict[str, Any]:
+        return {
+            "item_id": _name_property(),
+            "decision": bpy.props.EnumProperty(name=text("screen.prop_decision"), items=labels.decision_items,
+                                               translation_context=TRANSLATION_CONTEXT),
+        }
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.decision_failed", self._decide)
+
+    def _decide(self) -> set[str]:
+        report = current_report()
+        title = _item_title(report, self.item_id)
+        if self.decision not in DECISIONS:
+            raise ValueError(f"答えは {DECISIONS} のどれかにしてください（いまは {self.decision!r}）")
+        store = decision_store()
+        store.decide(self.item_id, self.decision, version=report_version(report))
+        store.save()
+        state.apply_decisions(store)
+        self.report({"INFO"}, text("screen.decided", title=title, decision=decision_label(self.decision)))
+        return {"FINISHED"}
+
+
+class AI_TOOLS_OT_clear_decision(_Localized, bpy.types.Operator):
+    """報告の1件の答えを消す（まだ決めていない、に戻す）"""
+
+    bl_idname = "ai_tools.clear_decision"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_clear_decision"
+    TIP_KEY = "screen.clear_decision_tip"
+
+    @classmethod
+    def properties(cls) -> dict[str, Any]:
+        return {"item_id": _name_property()}
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.decision_failed", self._clear)
+
+    def _clear(self) -> set[str]:
+        title = _item_title(current_report(), self.item_id)
+        store = decision_store()
+        store.clear(self.item_id)
+        store.save()
+        state.apply_decisions(store)
+        self.report({"INFO"}, text("screen.decision_cleared", title=title))
+        return {"FINISHED"}
+
+
+def write_current_html() -> Path:
+    """いまの報告（答えを写した物）を、作業フォルダの reports/<報告の id>.html に書く"""
+    folder = work_dir()
+    report = current_report()
+    path = report_html.write_html(report, folder / REPORTS_DIR / f"{report.report_id}.html")
+    state.set_report_html(path)
+    return path
+
+
+def open_path(path: Path) -> None:
+    """ファイルを、ふだん使うアプリ（HTML ならブラウザ）で開く（テストでは差しかえる）"""
+    bpy.ops.wm.path_open(filepath=str(path))
+
+
+class AI_TOOLS_OT_write_report_html(_Localized, bpy.types.Operator):
+    """いまの報告を HTML のファイルにする（作業フォルダの reports/）"""
+
+    bl_idname = "ai_tools.write_report_html"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_write_report_html"
+    TIP_KEY = "screen.write_report_html_tip"
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.report_html_failed", self._write)
+
+    def _write(self) -> set[str]:
+        path = write_current_html()
+        self.report({"INFO"}, text("screen.report_html_written", path=str(path)))
+        return {"FINISHED"}
+
+
+class AI_TOOLS_OT_open_report_html(_Localized, bpy.types.Operator):
+    """いまの報告を HTML に書き直して、ブラウザで開く"""
+
+    bl_idname = "ai_tools.open_report_html"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_open_report_html"
+    TIP_KEY = "screen.open_report_html_tip"
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.report_html_failed", self._open)
+
+    def _open(self) -> set[str]:
+        path = write_current_html()
+        open_path(path)
+        self.report({"INFO"}, text("screen.report_html_written", path=str(path)))
+        return {"FINISHED"}
+
+
+class AI_TOOLS_OT_record_baseline(_Localized, bpy.types.Operator):
+    """いまの報告の赤の数（「このままでよい」は除く）を、次の版と比べる基準として記録する"""
+
+    bl_idname = "ai_tools.record_baseline"
+    bl_label = ""
+    bl_options = {"REGISTER"}
+    LABEL_KEY = "screen.op_record_baseline"
+    TIP_KEY = "screen.record_baseline_tip"
+
+    def execute(self, context: Any) -> set[str]:
+        return run_guarded(self, "screen.decision_failed", self._record)
+
+    def _record(self) -> set[str]:
+        report = current_report()
+        store = decision_store()
+        red = store.record_baseline(report.kind, report.items, version=report_version(report))
+        store.save()
+        state.apply_decisions(store)
+        self.report({"INFO"}, text("screen.baseline_recorded", count=red))
+        return {"FINISHED"}
 
 
 CLASSES = (
@@ -427,5 +828,16 @@ CLASSES = (
     AI_TOOLS_OT_check_bones,
     AI_TOOLS_OT_answer_bone,
     AI_TOOLS_OT_clear_bone_answer,
-    AI_TOOLS_OT_coming_soon,
+    AI_TOOLS_OT_save_version,
+    AI_TOOLS_OT_compare_versions,
+    AI_TOOLS_OT_export_and_check,
+    AI_TOOLS_OT_run_course,
+    AI_TOOLS_OT_cancel_job,
+    AI_TOOLS_OT_remove_job,
+    AI_TOOLS_OT_show_job_result,
+    AI_TOOLS_OT_decide,
+    AI_TOOLS_OT_clear_decision,
+    AI_TOOLS_OT_write_report_html,
+    AI_TOOLS_OT_open_report_html,
+    AI_TOOLS_OT_record_baseline,
 )

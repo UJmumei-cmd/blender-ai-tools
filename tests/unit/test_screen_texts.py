@@ -25,6 +25,8 @@ DYNAMIC_KEYS = {
     "screen.signal_": tuple(signal.name.lower() for signal in Signal),
     "screen.pref_language_": ("auto", "ja", "en"),
     "screen.summary_": ("unknown_bones", "unconfirmed_parts", "body_measurements", "source_terms", "card_current"),
+    # 裏の係に出す重い道具（labels.tool_label。道具の id の「.」を「_」にした名前）
+    "screen.tool_": ("export_convert_and_check", "motion_run_course"),
 }
 
 

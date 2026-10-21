@@ -12,6 +12,7 @@ from .. import texts
 from ..bones import canonical_names
 from ..measure.results import Signal
 from ..model.card import CLOTH_TYPE_IDS, EXTRA_ANSWER, PART_KINDS
+from ..report.model import DECISIONS, decision_label
 from ..texts import text
 
 # MARK: - 名前
@@ -40,6 +41,30 @@ def chosen_kind_label(kind: str, kind_source: str) -> str:
 def answer_label(answer: str) -> str:
     """骨の答えの名前（共通の名前はそのまま、"extra" は「揺れ物・人の形ではない」）"""
     return text("screen.answer_extra") if answer == EXTRA_ANSWER else answer
+
+
+def tool_label(tool_id: str) -> str:
+    """目録の道具の名前（書き出して確かめる など）。文の無い道具は、道具の id のまま"""
+    key = f"screen.tool_{tool_id.replace('.', '_')}"
+    return text(key) if key in texts.TEXTS else tool_id
+
+
+def job_status_label(status: str) -> str:
+    """仕事のようすの名前（順番待ち・動いています など。jobs.status_*）。知らないようすは、そのままの名前"""
+    key = f"jobs.status_{status}"
+    return text(key) if key in texts.TEXTS else status
+
+
+def job_text(key: str | None, values: Any, fallback: str | None = None) -> str | None:
+    """仕事の進み具合・理由の文（texts のキーと値）。キーが無い・値が合わないときは fallback（無ければキーのまま）"""
+    if not key:
+        return fallback
+    if key in texts.TEXTS and isinstance(values, dict):
+        try:
+            return text(key, **values)
+        except (KeyError, ValueError, IndexError):
+            pass
+    return fallback if fallback else key
 
 
 # MARK: - 信号
@@ -101,6 +126,11 @@ def answer_items(self: Any = None, context: Any = None) -> list[tuple[str, str, 
     """骨の答えの一覧：「揺れ物・人の形ではない」と、共通の名前（MMD 準標準。辞書の順）"""
     return _cached("answer", lambda: [(EXTRA_ANSWER, text("screen.answer_extra"), text("screen.answer_extra_tip"))]
                    + [(name, name, "") for name in canonical_names()])
+
+
+def decision_items(self: Any = None, context: Any = None) -> list[tuple[str, str, str]]:
+    """報告の1件への答えの一覧（report.model.DECISIONS の順）"""
+    return _cached("decision", lambda: [(decision, decision_label(decision), "") for decision in DECISIONS])
 
 
 def clear_cache() -> None:

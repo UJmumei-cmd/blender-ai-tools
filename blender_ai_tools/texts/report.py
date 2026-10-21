@@ -75,10 +75,11 @@ TEXTS: dict[str, dict[str, str]] = {
     "report.item_edge_stretch": {"ja": "面の伸び", "en": "Face stretch"},
     "report.item_flipped_faces": {"ja": "裏返った面", "en": "Flipped faces"},
     "report.item_volume_loss": {"ja": "体積の減り", "en": "Volume loss"},
-    "report.item_spikes": {"ja": "とげ", "en": "Spikes"},
-    "report.item_over_limit_influences": {"ja": "1点に付く骨が多すぎる", "en": "Too many bones per vertex"},
+    "report.item_spike": {"ja": "とげ", "en": "Spikes"},
+    "report.item_bone_influences_over_limit": {"ja": "1点に付く骨が多すぎる", "en": "Too many bones per vertex"},
     "report.item_unweighted_vertices": {"ja": "どの骨にも付いていない点", "en": "Unweighted vertices"},
-    "report.item_not_normalized_weights": {"ja": "合計が 1 でないウェイト", "en": "Weights not summing to 1"},
+    "report.item_weights_not_normalized": {"ja": "合計が 1 でないウェイト", "en": "Weights not summing to 1"},
+    "report.item_duplicate_bone_ids": {"ja": "同じ骨が2回入っている点", "en": "Vertices with the same bone twice"},
     "report.item_negative_weights": {"ja": "負のウェイト", "en": "Negative weights"},
     "report.item_reverse_bend": {"ja": "ひざ・ひじの逆曲がり", "en": "Reverse knee/elbow bend"},
     "report.item_floor_sink": {"ja": "床への沈み", "en": "Sinking into the floor"},
@@ -97,4 +98,29 @@ TEXTS: dict[str, dict[str, str]] = {
     "report.item_influence_limit_effect": {"ja": "4本に絞った影響", "en": "Effect of the 4-bone limit"},
     "report.item_physics_parts": {"ja": "物理の部品", "en": "Physics parts"},
     "report.item_red_count_change": {"ja": "赤の数の前の版との比べ", "en": "Red count vs previous version"},
+    # MARK: - 道具の結果から作る報告（report/sources.py）
+    # 点検の種類の名前（Report.kind）
+    "report.kind_label_export": {"ja": "書き出して確かめる", "en": "Export and check"},
+    "report.kind_label_pose_course": {"ja": "確かめの動き", "en": "Pose course"},
+    "report.kind_label_versions": {"ja": "前の版との比べ", "en": "Comparison with the previous version"},
+    # E1 書き出し
+    "report.item_convert": {"ja": "書き出し（convert_blend.py）", "en": "Export (convert_blend.py)"},
+    "report.convert_ok": {"ja": "書き出せました", "en": "Exported"},
+    "report.convert_no_detail": {
+        "ja": "書き出しに問題がありました（くわしい理由はありません）",
+        "en": "The export had a problem (no details were given)",
+    },
+    # E2 往復の確認：ポーズごとの形のずれ
+    "report.roundtrip_pose_item": {"ja": "読み戻した形のずれ：{pose}", "en": "Round-trip shape deviation: {pose}"},
+    "report.export_pose_rest": {"ja": "休みの姿勢", "en": "Rest pose"},
+    "report.export_pose_arms_up": {"ja": "腕を上げる", "en": "Arms up"},
+    "report.export_pose_elbows": {"ja": "ひじを曲げる", "en": "Elbows bent"},
+    "report.export_pose_knees": {"ja": "ひざを曲げる", "en": "Knees bent"},
+    "report.export_pose_twist": {"ja": "体をひねる", "en": "Body twist"},
+    # A6 前の版との比べ
+    "report.versions_outside": {
+        "ja": "変えてよい所の外の変化です（変える前に、変えてよい所を決めてください）",
+        "en": "This change is outside the allowed changes (decide the allowed changes before changing)",
+    },
+    "report.versions_allowed": {"ja": "変えてよい所の中の変化です", "en": "This change is inside the allowed changes"},
 }

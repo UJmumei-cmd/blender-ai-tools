@@ -2,10 +2,13 @@
 
 - モデル：登録する・確かめる、カードのまとめ（背の高さ・信号）、部品と材質の種類を選ぶ一覧
 - 骨：骨の名前を調べる、聞きたい骨と答え方（共通の名前の一覧から選ぶ・揺れ物など）、足りない骨
-- 書き出し・確かめの動き・版：見えるが、まだ押せない（裏で動かす係 A10 のあとで動く）
+- 確かめと書き出し：版の保存と前の版との比べ、保存した版の一覧、書き出して確かめる（E1＋E2）、確かめの動き（A5）
+- 裏の仕事（A10）：順番待ち・動いている・終わった仕事、進み具合、中止・結果を見る・一覧から消す
+- 報告（A11）：いちばん上の一言、赤の数の基準との比べ、1件ずつの信号と答え（直す・このままでよい・あとで）、HTML
 
 文はどれも texts の screen.* から作り、Blender の翻訳を通さない（translate=False）。
-描くときは何も変えない（読むだけ）。数字の文字は labels（プログラム）が作る。
+描くときは何も変えない（読むだけ）。仕事の一覧・版の一覧・報告は、覚えた物（state・background）を読む。
+数字の文字は labels・report（プログラム）が作る。
 """
 
 import traceback
@@ -14,18 +17,23 @@ from typing import Any
 
 import bpy
 
-from ..measure.results import Signal
+from ..measure.results import Measurement, Signal
 from ..model import extract_bpy
 from ..model.card import (
     CARD_CURRENT_NAME, EXTRA_ANSWER, HEIGHT, SEMI_STANDARD_NAME, ModelCard, summarize_card,
 )
-from ..texts import text
-from . import labels, operators, state
+from ..report import sources as report_sources
+from ..report.model import DECISIONS, compare_red_count, decision_label, headline, sort_items, value_text
+from ..texts import current_language, text
+from . import background, labels, operators, preferences, state
 from .preferences import TRANSLATION_CONTEXT
 
 # 一覧（部品と材質・聞きたい骨・調べた骨）に1回に出す行の数。多いモデルでも描き直しが重くならないようにする
 # （画面の決まり。基準の数字ではない）
 MAX_LISTED_ROWS = 40
+# 裏の仕事の一覧と、保存した版の一覧に出す行の数（新しい物から）
+MAX_JOB_ROWS = 10
+MAX_VERSION_ROWS = 10
 # 文の幅の目安：半角1字の幅（ピクセル。画面の大きさ 1.0 のとき）と、パネルの左右とアイコンの分の幅
 _CHAR_PIXELS = 6.5
 _MARGIN_PIXELS = 56
@@ -361,18 +369,190 @@ def draw_missing(layout: Any, context: Any, bone_mapping: dict[str, Any]) -> Non
     wrapped_label(box, context, labels_join(missing))
 
 
-# MARK: - 次の段階
+# MARK: - 確かめと書き出し（A6 版・E1＋E2・A5）
 
 
-def draw_next(layout: Any, context: Any) -> None:
-    """書き出し・確かめの動き・版のボタン（見えるが押せない）"""
-    column = layout.column(align=True)
-    column.enabled = False
-    for feature, label_key, _tip_key, icon in operators.NEXT_FEATURES:
-        props = column.operator(operators.AI_TOOLS_OT_coming_soon.bl_idname, text=text(label_key), icon=icon,
-                                translate=False)
-        props.feature = feature
-    wrapped_label(layout, context, text("screen.next_note"), icon="INFO")
+def draw_checks(layout: Any, context: Any) -> None:
+    """版の保存と比べ、保存した版の一覧、書き出して確かめる、確かめの動き"""
+    row = layout.row(align=True)
+    row.operator(operators.AI_TOOLS_OT_save_version.bl_idname, text=text("screen.save_version"), icon="FILE_TICK",
+                 translate=False)
+    row.operator(operators.AI_TOOLS_OT_compare_versions.bl_idname, text=text("screen.compare_versions"),
+                 icon="ARROW_LEFTRIGHT", translate=False)
+    saved = state.versions()
+    draw_versions(layout, context, saved)
+
+    box = layout.box()
+    box.operator(operators.AI_TOOLS_OT_export_and_check.bl_idname, text=text("screen.export_and_check"),
+                 icon="EXPORT", translate=False)
+    if saved:
+        newest = max(saved, key=lambda entry: entry.number)
+        wrapped_label(box, context, text("screen.export_input", name=newest.name), icon="FILE_BLEND")
+    else:
+        wrapped_label(box, context, text("screen.export_needs_version"), icon="INFO")
+    message, icon = preferences.koumakan_status(preferences.get_preferences())
+    if icon != "CHECKMARK":
+        wrapped_label(box, context, message, icon=icon)
+
+    box = layout.box()
+    box.operator(operators.AI_TOOLS_OT_run_course.bl_idname, text=text("screen.run_course"), icon="ARMATURE_DATA",
+                 translate=False)
+    wrapped_label(box, context, text("screen.course_note"), icon="INFO")
+
+
+def draw_versions(layout: Any, context: Any, saved: Sequence[state.VersionEntry] | None) -> None:
+    """保存した版の一覧（新しい版が上）"""
+    if saved is None:
+        wrapped_label(layout, context, text("screen.versions_unsaved"), icon="INFO")
+        return
+    if not saved:
+        wrapped_label(layout, context, text("screen.versions_none"), icon="INFO")
+        return
+    box = layout.box()
+    box.label(text=text("screen.versions_title", count=len(saved)), icon="FILE_BLEND", translate=False)
+    ordered = sorted(saved, key=lambda entry: entry.number, reverse=True)
+    column = box.column(align=True)
+    for entry in ordered[:MAX_VERSION_ROWS]:
+        column.label(text=text("versions.version_entry", number=entry.number, name=entry.name), icon="DOT",
+                     translate=False)
+    if len(ordered) > MAX_VERSION_ROWS:
+        wrapped_label(box, context, text("screen.versions_more", count=len(ordered) - MAX_VERSION_ROWS),
+                      icon="THREE_DOTS")
+
+
+# MARK: - 裏の仕事（A10）
+
+# 仕事のようすごとのアイコン
+JOB_ICONS = {"queued": "SORTTIME", "running": "PLAY", "done": "CHECKMARK", "failed": "ERROR",
+             "cancelled": "CANCEL"}
+
+
+def draw_jobs(layout: Any, context: Any) -> None:
+    """仕事の一覧（新しい物が上）：ようす・進み具合・理由と、中止・結果を見る・一覧から消す"""
+    rows = list(reversed(background.rows()))
+    broken = background.unreadable()
+    if not rows and not broken:
+        wrapped_label(layout, context, text("screen.jobs_none"), icon="INFO")
+        return
+    for row in rows[:MAX_JOB_ROWS]:
+        draw_job(layout, context, row)
+    if len(rows) > MAX_JOB_ROWS:
+        wrapped_label(layout, context, text("screen.jobs_more", count=len(rows) - MAX_JOB_ROWS), icon="THREE_DOTS")
+    if broken:
+        wrapped_label(layout, context, text("screen.jobs_unreadable", count=len(broken)), icon="ERROR")
+
+
+def draw_job(layout: Any, context: Any, row: background.JobRow) -> None:
+    job, progress = row.job, row.progress
+    box = layout.box()
+    status = text("screen.job_cleaning") if row.cleaning else labels.job_status_label(progress.status)
+    icon = "TIME" if row.cleaning else JOB_ICONS.get(progress.status, "QUESTION")
+    box.label(text=text("screen.job_title", tool=labels.tool_label(job.tool_id), status=status), icon=icon,
+              translate=False)
+    box.label(text=text("screen.job_created", time=job.created_at), icon="BLANK1", translate=False)
+    if not progress.is_finished:
+        message = labels.job_text(progress.message_key, progress.message_values, "")
+        if progress.total:
+            line = text("screen.job_step", step=progress.step, total=progress.total, message=message) if message \
+                else text("jobs.step_of", step=progress.step, total=progress.total)
+            wrapped_label(box, context, line, icon="BLANK1")
+        elif message:
+            wrapped_label(box, context, message, icon="BLANK1")
+    reason = labels.job_text(progress.error_key, progress.error_values, progress.error)
+    if reason:
+        column = box.column()
+        column.alert = progress.status == "failed"
+        wrapped_label(column, context, reason, icon="BLANK1")
+    buttons = box.row(align=True)
+    if not progress.is_finished:
+        props = buttons.operator(operators.AI_TOOLS_OT_cancel_job.bl_idname, text=text("screen.cancel_job"),
+                                 icon="CANCEL", translate=False)
+        props.job_id = job.job_id
+        return
+    if row.cleaning:
+        return
+    if progress.status == "done" and report_sources.makes_report(job.tool_id):
+        props = buttons.operator(operators.AI_TOOLS_OT_show_job_result.bl_idname, text=text("screen.show_job_result"),
+                                 icon="VIEWZOOM", translate=False)
+        props.job_id = job.job_id
+    props = buttons.operator(operators.AI_TOOLS_OT_remove_job.bl_idname, text=text("screen.remove_job"),
+                             icon="TRASH", translate=False)
+    props.job_id = job.job_id
+
+
+# MARK: - 報告（A11）
+
+
+def _worst_signal(items: Sequence[Any]) -> Signal:
+    counted = [item.counted_signal for item in items if item.counted_signal is not None]
+    return max(counted) if counted else Signal.GREEN
+
+
+def baseline_line(items: Sequence[Any], baseline: int | None) -> tuple[str, Signal]:
+    """赤の数を、記録した基準と比べた1行（数はプログラムが入れる）と、その信号"""
+    measurement = compare_red_count(items, baseline)
+    current = str(measurement.details["current"])
+    if baseline is None:
+        return text("report.baseline_first", current=current), measurement.signal
+    key = "report.baseline_increase" if measurement.signal == Signal.RED else "report.baseline_ok"
+    return text(key, current=current, previous=str(baseline)), measurement.signal
+
+
+def draw_report(layout: Any, context: Any) -> None:
+    """いまの報告：いちばん上の一言、前の版の基準との比べ、HTML・基準のボタン、1件ずつの信号と答え"""
+    view = state.report_view()
+    if view is None:
+        wrapped_label(layout, context, text("screen.report_none"), icon="INFO")
+        return
+    report = view.report
+    layout.label(text=text("screen.report_header", kind=report_sources.kind_label(report.kind), time=report.created_at),
+                 icon="DOCUMENTS", translate=False)
+    worst = _worst_signal(report.items)
+    wrapped_label(layout, context, labels.signal_row(worst, headline(report.items)), icon=labels.SIGNAL_ICONS[worst])
+    line, signal = baseline_line(report.items, view.baseline_red)
+    wrapped_label(layout, context, line, icon=labels.SIGNAL_ICONS[signal])
+    if view.store_error is not None:
+        column = layout.column()
+        column.alert = True
+        wrapped_label(column, context, text("screen.decisions_unreadable", error=view.store_error), icon="ERROR")
+    buttons = layout.row(align=True)
+    buttons.operator(operators.AI_TOOLS_OT_write_report_html.bl_idname, text=text("screen.write_report_html"),
+                     icon="FILE_TEXT", translate=False)
+    buttons.operator(operators.AI_TOOLS_OT_open_report_html.bl_idname, text=text("screen.open_report_html"),
+                     icon="URL", translate=False)
+    buttons.operator(operators.AI_TOOLS_OT_record_baseline.bl_idname, text=text("screen.record_baseline"),
+                     icon="BOOKMARKS", translate=False)
+    if view.html_path is not None:
+        wrapped_label(layout, context, text("screen.report_html_at", path=str(view.html_path)), icon="FILE_TEXT")
+    items = sort_items(report.items)
+    for item in items[:MAX_LISTED_ROWS]:
+        draw_report_item(layout, context, item)
+    _more_rows(layout, context, len(items) - MAX_LISTED_ROWS)
+
+
+def draw_report_item(layout: Any, context: Any, item: Any) -> None:
+    measurement = Measurement.from_data(item.measurement)
+    box = layout.box()
+    title = item.titles.get(current_language()) or item.titles["ja"]
+    wrapped_label(box, context, labels.signal_row(measurement.signal, title), icon=labels.SIGNAL_ICONS[measurement.signal])
+    box.label(text=text("screen.item_value", value=value_text(item.measurement)), icon="BLANK1", translate=False)
+    if measurement.signal == Signal.GREEN:
+        return
+    if measurement.reason:
+        wrapped_label(box, context, measurement.reason, icon="BLANK1")
+    if item.decision is not None:
+        row = box.row(align=True)
+        row.label(text=text("screen.decision_current", decision=decision_label(item.decision)), icon="CHECKMARK",
+                  translate=False)
+        props = row.operator(operators.AI_TOOLS_OT_clear_decision.bl_idname, text="", icon="X", translate=False)
+        props.item_id = item.item_id
+    buttons = box.row(align=True)
+    buttons.operator_context = "EXEC_DEFAULT"
+    for decision in DECISIONS:
+        props = buttons.operator(operators.AI_TOOLS_OT_decide.bl_idname, text=decision_label(decision),
+                                 translate=False, depress=item.decision == decision)
+        props.item_id = item.item_id
+        props.decision = decision
 
 
 # MARK: - パネル
@@ -424,17 +604,39 @@ class VIEW3D_PT_ai_tools_bones(_Panel, bpy.types.Panel):
         draw_safely(self.layout, context, draw_bones)
 
 
-class VIEW3D_PT_ai_tools_next(_Panel, bpy.types.Panel):
-    bl_idname = "VIEW3D_PT_ai_tools_next"
+class VIEW3D_PT_ai_tools_checks(_Panel, bpy.types.Panel):
+    bl_idname = "VIEW3D_PT_ai_tools_checks"
     bl_parent_id = "VIEW3D_PT_ai_tools"
     bl_label = ""
     bl_category = ""
-    bl_options = {"DEFAULT_CLOSED"}
-    LABEL_KEY = "screen.section_next"
+    LABEL_KEY = "screen.section_checks"
 
     def draw(self, context: Any) -> None:
-        draw_safely(self.layout, context, draw_next)
+        draw_safely(self.layout, context, draw_checks)
+
+
+class VIEW3D_PT_ai_tools_jobs(_Panel, bpy.types.Panel):
+    bl_idname = "VIEW3D_PT_ai_tools_jobs"
+    bl_parent_id = "VIEW3D_PT_ai_tools"
+    bl_label = ""
+    bl_category = ""
+    LABEL_KEY = "screen.section_jobs"
+
+    def draw(self, context: Any) -> None:
+        draw_safely(self.layout, context, draw_jobs)
+
+
+class VIEW3D_PT_ai_tools_report(_Panel, bpy.types.Panel):
+    bl_idname = "VIEW3D_PT_ai_tools_report"
+    bl_parent_id = "VIEW3D_PT_ai_tools"
+    bl_label = ""
+    bl_category = ""
+    LABEL_KEY = "screen.section_report"
+
+    def draw(self, context: Any) -> None:
+        draw_safely(self.layout, context, draw_report)
 
 
 # 親のパネルを先にする（登録は前から、解除は後ろから）
-CLASSES = (VIEW3D_PT_ai_tools, VIEW3D_PT_ai_tools_model, VIEW3D_PT_ai_tools_bones, VIEW3D_PT_ai_tools_next)
+CLASSES = (VIEW3D_PT_ai_tools, VIEW3D_PT_ai_tools_model, VIEW3D_PT_ai_tools_bones, VIEW3D_PT_ai_tools_checks,
+           VIEW3D_PT_ai_tools_jobs, VIEW3D_PT_ai_tools_report)

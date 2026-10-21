@@ -3,19 +3,28 @@
 - 登録カードを読んだ物（カードのテキストが同じあいだは読み直さない。パネルは何度も描き直すため）
 - 「確かめる」「登録する」の結果（理由と知らせ）
 - 「骨の名前を調べる」の結果
+- いまの報告（A11）：もとの報告（答えなし）と、decisions.json の答えを写した物。答えが変わるたびに写し直す
+- 版の一覧（A6。パネルは描くたびに読まないので、ここに覚える）
 
 別のファイルを開いたら、全部消す（on_load_post）。
+パネルを描くときは、ここを読むだけにする（描くときに何も変えない）。
 """
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import bpy
 
+from .. import registry
 from ..bones import map_bones
+from ..catalog import CatalogError
 from ..model import card_bpy
 from ..model.card import ModelCard, answerable_bones
+from ..report.decisions import DECISIONS_FILE, DecisionStore
+from ..report.model import Report
+from . import preferences
 
 # MARK: - 登録カードを読んだ物
 
@@ -159,12 +168,128 @@ def bone_check() -> BoneCheck | None:
     return _bone_check
 
 
+# MARK: - 報告（A11）
+
+
+@dataclass(frozen=True)
+class ReportView:
+    """パネルに出す報告。
+
+    report: 答え（decisions.json）を写した報告
+    baseline_red: 同じ点検の種類の、記録した赤の数の基準（無ければ None）
+    store_error: decisions.json が読めなかった理由（読めたとき・ファイルを保存していないときは None）
+    html_path: 書いた HTML の場所（まだ書いていなければ None）
+    """
+
+    report: Report
+    baseline_red: int | None = None
+    store_error: str | None = None
+    html_path: Path | None = None
+
+
+_report_base: Report | None = None
+_report_view: ReportView | None = None
+
+
+def decisions_path() -> Path | None:
+    """答えの記録（decisions.json）の場所：作業フォルダの中。作業フォルダが決まらない（保存していない）ときは None"""
+    folder = preferences.work_dir_path(preferences.get_preferences())
+    return None if folder is None else folder / DECISIONS_FILE
+
+
+def load_store() -> DecisionStore | None:
+    """答えの記録を読む。作業フォルダが決まらないときは None。読めないときは ValueError"""
+    path = decisions_path()
+    return None if path is None else DecisionStore(path)
+
+
+def show_report(report: Report | None) -> None:
+    """いまの報告を置きかえる（答えは decisions.json から写す。None なら報告を消す）"""
+    global _report_base, _report_view
+    _report_base = report
+    _report_view = None
+    if report is not None:
+        apply_decisions()
+
+
+def apply_decisions(store: DecisionStore | None = None) -> None:
+    """いまの報告に、答えの記録を写し直す。store を渡さなければ、decisions.json を読む（読めなくても例外にしない）"""
+    global _report_view
+    if _report_base is None:
+        _report_view = None
+        return
+    html_path = _report_view.html_path if _report_view is not None else None
+    error = None
+    if store is None:
+        try:
+            store = load_store()
+        except (ValueError, OSError) as failure:
+            error = str(failure)
+    if store is None:
+        _report_view = ReportView(report=_report_base, store_error=error, html_path=html_path)
+        return
+    _report_view = ReportView(report=_report_base.with_decisions(store.decisions),
+                              baseline_red=store.baseline_red(_report_base.kind), html_path=html_path)
+
+
+def set_report_html(path: Path) -> None:
+    """いまの報告の HTML を書いた場所を覚える"""
+    global _report_view
+    if _report_view is not None:
+        _report_view = ReportView(report=_report_view.report, baseline_red=_report_view.baseline_red,
+                                  store_error=_report_view.store_error, html_path=path)
+
+
+def report_view() -> ReportView | None:
+    return _report_view
+
+
+# MARK: - 版の一覧（A6）
+
+
+@dataclass(frozen=True)
+class VersionEntry:
+    """保存した版1つ：番号・場所・ファイルの名前"""
+
+    number: int
+    path: str
+    name: str
+
+
+# 版の一覧（番号の小さい順）。ファイルを保存していない・読めなかったときは None
+_versions: tuple[VersionEntry, ...] | None = None
+
+
+def refresh_versions() -> tuple[VersionEntry, ...] | None:
+    """版の一覧を、目録の道具 versions.list で読み直して覚える（ファイルを保存していないときは None）"""
+    global _versions
+    if not bpy.data.filepath:
+        _versions = None
+        return None
+    try:
+        result = registry.build_catalog().call("versions.list", {})
+    except (ValueError, OSError, CatalogError):
+        _versions = None
+        return None
+    _versions = tuple(VersionEntry(number=entry["number"], path=entry["path"], name=entry["name"])
+                      for entry in result["versions"])
+    return _versions
+
+
+def versions() -> tuple[VersionEntry, ...] | None:
+    """覚えている版の一覧（読み直さない）"""
+    return _versions
+
+
 def clear() -> None:
     """覚えた物を全部消す"""
-    global _view_cache, _card_status, _bone_check
+    global _view_cache, _card_status, _bone_check, _report_base, _report_view, _versions
     _view_cache = None
     _card_status = None
     _bone_check = None
+    _report_base = None
+    _report_view = None
+    _versions = None
 
 
 @bpy.app.handlers.persistent

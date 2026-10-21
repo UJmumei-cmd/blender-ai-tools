@@ -173,7 +173,8 @@ def save_version(params: dict[str, Any]) -> dict[str, Any]:
 
 COMPARE_WITH_PREVIOUS = ToolSpec(
     id="versions.compare_with_previous",
-    version="1",
+    # 版 2：変わった所ごとに、文の形のキー（key）と日本語・英語の文（texts）を返す（版 1 の text の代わり。報告 A11 の題に使う）
+    version="2",
     feature="A6",
     category="versions",
     title="前の版と比べる",
@@ -234,8 +235,10 @@ def allowed_from_params(items: list[dict[str, Any]] | None) -> AllowedChanges:
 
 
 def _change_data(change: Change) -> dict[str, Any]:
+    """変わった所1つの形。key は文の形のキー（versions.*）、texts は言語 → 文（報告の題に、両方の言語が要るため）"""
     return {"category": change.category, "object": change.object, "count": change.count,
-            "outside_allowed": change.outside_allowed, "text": change.text()}
+            "outside_allowed": change.outside_allowed, "key": change.text_key,
+            "texts": {language: change.text(language) for language in texts.LANGUAGES}}
 
 
 def compare_with_previous(params: dict[str, Any]) -> dict[str, Any]:

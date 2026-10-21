@@ -2,7 +2,9 @@
 
 - register：設定のクラスを登録し、設定の言語で画面の文の言語を決めて（texts.set_language）、
   パネルと操作を、その言語の名前で登録する。別のファイルを開いたときに、覚えた結果を消す係も付ける。
+  裏の仕事の順番待ち（background。いまのファイルの仕事のフォルダがあれば、そこに1つだけ）につなぐ。
 - unregister：全部を外し、言語を登録の前に戻す（テストなど、同じ Blender の中のほかの物に影響を残さない）。
+  裏の仕事のタイマーも止める（動いている裏の Blender は止めない。次の register の recover() が扱う）。
 - apply_language：言語を変える。パネルと操作の名前（タブの名前も）を、新しい言語で作り直す。
   設定の言語を変えたときに、設定のクラスから呼ばれる。
 """
@@ -10,7 +12,7 @@
 import bpy
 
 from .. import texts
-from . import labels, operators, panel, preferences, state
+from . import background, labels, operators, panel, preferences, state
 
 # 登録する順（設定のクラスは別に登録する）。パネルは親を先にする
 CLASSES = (*operators.CLASSES, *panel.CLASSES)
@@ -74,6 +76,11 @@ def register() -> None:
             _register_class(cls)
         if state.on_load_post not in bpy.app.handlers.load_post:
             bpy.app.handlers.load_post.append(state.on_load_post)
+        if background.on_load_post not in bpy.app.handlers.load_post:
+            bpy.app.handlers.load_post.append(background.on_load_post)
+        if background.on_save_post not in bpy.app.handlers.save_post:
+            bpy.app.handlers.save_post.append(background.on_save_post)
+        background.register()
     except Exception:
         unregister()
         raise
@@ -81,8 +88,13 @@ def register() -> None:
 
 def unregister() -> None:
     global _previous_language
+    background.unregister()
     if state.on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(state.on_load_post)
+    if background.on_load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(background.on_load_post)
+    if background.on_save_post in bpy.app.handlers.save_post:
+        bpy.app.handlers.save_post.remove(background.on_save_post)
     _unregister_classes()
     preferences.unregister_preferences()
     state.clear()

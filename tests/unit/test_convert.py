@@ -499,6 +499,21 @@ class RefuseTest(FakeKoumakanTestCase):
         self.assert_refused(self.app_model / "sub", "アプリの Model フォルダ")
         self.assertFalse(self.app_model.exists())
 
+    def test_check_output_dir_before_running(self):
+        """画面が仕事を出す前の確かめ（check_output_dir）も、同じ場所を断る。フォルダは作らない"""
+        for output, message in ((self.app_model / "sub", "アプリの Model フォルダ"),
+                                (self.converter_dir / "out", "convert_blend.py のあるフォルダ")):
+            with self.subTest(output=output):
+                with self.assertRaisesRegex(ValueError, message):
+                    convert.check_output_dir(output, self.repo)
+                self.assertFalse(output.exists())
+        fine = self.root / "work" / "exports" / "model_v001_job"
+        self.assertEqual(convert.check_output_dir(fine, self.repo), fine)
+        self.assertFalse(fine.exists())
+        with self.assertRaises(ValueError):
+            convert.check_output_dir(fine, self.root / "no_repo")
+        self.assertFalse(self.args_file.exists())
+
     def test_refuses_converter_dir(self):
         message = "convert_blend.py のあるフォルダ"
         self.assert_refused(self.converter_dir, message)

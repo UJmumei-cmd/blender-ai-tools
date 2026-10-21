@@ -143,8 +143,9 @@ blender_ai_tools/      拡張機能の本体（このフォルダを zip にし�
   motion/              A5 確かめの動き（決まったポーズの並びと、ポーズごとの確かめ）
   versions/            A6 版の管理と変更点の一覧（_v001 の保存、前の版との違い）
   jobs/                A10 重い作業を裏で動かす係（順番待ち・進み具合・中止。worker_main_bpy.py が裏の Blender の入口）
+  report/              A11 信号の報告（model.py：項目と報告の形・一言、decisions.py：答えの記録 decisions.json、html.py：HTML、sources.py：目録の道具の結果から報告を作る）
   texts/               画面の文と報告の文（日本語と英語）。文の形はここだけに置く
-  ui/                  パネル（3D ビューの右の欄「AI の道具」）・オペレーター・設定
+  ui/                  パネル（3D ビューの右の欄「AI の道具」）・オペレーター・設定。background.py：裏の係の順番待ち（いまのファイルに1つ）、state.py：画面の覚え（報告・版の一覧）
 tests/
   run_in_blender.py    Blender の中でテストを動かす（全部、または選んだもの）
   shapes.py            テスト用の形（箱・球・格子）
@@ -296,4 +297,6 @@ tools/                 開発用のスクリプト（run_tests.sh：テスト、
 - A5（点検で決めた）：床の高さは、休みの姿勢の体の頂点のいちばん低い所。横になる姿勢（lying）では床への沈みを測らない。見え方（まわり全体のカメラ）は、重いので初めは使わない（`visibility=False`。裏の係から使うときに on にする）。アプリの動きは `MotionLibrary.swift` の式を移すまで灰。
 - A8：目録の道具は、骨の対応（`bones.map_names`）のほかに、書き出して確かめる（`export.convert_and_check`。重い）、版の保存・前の版との比べ・一覧（`versions.*`）、確かめの動き（`motion.run_course`。重い）。どれも「見るだけ」（モデルを変えない。版の保存は新しいファイルを作るだけ）。重い道具は画面から裏の係（A10）で動かす。
 - LLM（段階2）：Qwen3.8 Flash Next（Strata でだけ動く。初めの値）・Gemma 26B・Gemma 31B から設定で選ぶ。ハーネスは Blender の外の別プロセスで、エンジンごとの違いは adapter に閉じ込める（`docs/harness.md`）。
+- 段階1のボタン（画面）：「版を保存」「前の版と比べる」は目録の道具をその場で呼ぶ。「書き出して確かめる」「確かめの動き」は裏の係（A10）に仕事として出す。書き出すのは、いちばん新しい保存した版（版が無ければ断る）で、出力は作業フォルダの `exports/<版の名前>_<仕事の id>/`（毎回新しいフォルダ）。確かめの動きの入力は、いまの形の写し（`save_as_mainfile(copy=True)`）を仕事のフォルダの `input.blend` に置いた物で、ボタンでは見え方（`visibility`）を on にする（目録の道具の既定は off のまま）。報告の答えと赤の数の基準は、作業フォルダの `decisions.json`、HTML は作業フォルダの `reports/`。報告の種類は `export`・`pose_course`・`versions`（`report/sources.py`）。
+- A6：`versions.compare_with_previous` は版 2 で、変わった所ごとに `key`（文の形のキー）と `texts`（日本語と英語の文）を返す（報告の題に使う）。
 - A6：版の記録のオブジェクトの名前は `name_full`（ほかのファイルからリンクした物は「名前 [ファイル名]」）。同じ名前の物が重なっても記録から消えない。前の版が無い・記録が読めないときは灰（どんな壊れ方でも例外で止めず灰にする）。
